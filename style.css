@@ -1,0 +1,94 @@
+:root {
+  --bg: #faf3e0;
+  --fg: #2a241c;
+  --muted: #8a7c64;
+  --link: #6b3f20;
+  --rule: #e6d8b8;
+  --code-bg: rgba(80, 60, 30, 0.07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1813;
+    --fg: #e8dfcc;
+    --muted: #9a8c74;
+    --link: #d4a86a;
+    --rule: #3a3228;
+    --code-bg: rgba(255, 235, 200, 0.06);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 4rem;
+}
+
+h1, h2, h3, h4 { line-height: 1.25; font-weight: 600; }
+h1 { font-size: 1.75rem; margin: 0 0 0.5rem; }
+h2 { font-size: 1.25rem; margin: 2rem 0 0.5rem; }
+h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
+p { margin: 0.75rem 0; }
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.post a { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+ul.post-list { list-style: none; padding: 0; margin: 0.5rem 0 1.5rem; }
+ul.post-list li { display: flex; gap: 1rem; padding: 0.2rem 0; align-items: baseline; }
+ul.post-list time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 6.5em; font-size: 0.95rem; }
+
+.post-header { margin: 0 0 1.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--rule); }
+.post-header h1 { margin: 0 0 0.25rem; }
+.post-header time { color: var(--muted); font-size: 0.95rem; }
+
+img { max-width: 100%; height: auto; }
+.about-photo { float: right; width: 160px; border-radius: 50%; margin: 0.25rem 0 1rem 1.5rem; }
+@media (max-width: 480px) {
+  .about-photo { float: none; display: block; margin: 0 auto 1rem; width: 140px; }
+}
+
+iframe {
+  width: 100%;
+  border: 0;
+  display: block;
+  margin: 1rem 0;
+  background: transparent;
+}
+
+pre, :not(pre) > code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+}
+pre {
+  overflow-x: auto;
+  padding: 0.5rem 0.75rem;
+  background: var(--code-bg);
+  border-radius: 3px;
+  line-height: 1.45;
+}
+pre code, pre code.hljs { background: transparent; padding: 0; color: inherit; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+
+blockquote {
+  border-left: 3px solid var(--rule);
+  margin: 1rem 0;
+  padding: 0.1rem 0 0.1rem 1rem;
+  color: var(--muted);
+}
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { border-bottom: 1px solid var(--rule); padding: 0.4rem 0.6rem; text-align: left; }
+
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25rem 0; }
