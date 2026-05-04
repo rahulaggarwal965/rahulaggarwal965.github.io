@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Naive vs SE(2) integration</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 110px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { min-width: 0; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>v<sub>x</sub> <input id="vx" type="range" min="-1" max="1" step="0.01" value="0.6"><span class="val" id="vxV">0.60</span></label>
+  <label>v<sub>y</sub> <input id="vy" type="range" min="-1" max="1" step="0.01" value="0"><span class="val" id="vyV">0.00</span></label>
+  <label>ω <input id="om" type="range" min="-3" max="3" step="0.01" value="1.5"><span class="val" id="omV">1.50</span></label>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">Naive integration</p>
+    <canvas id="naive"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">SE(2) integration</p>
+    <canvas id="se2"></canvas>
+  </div>
+</div>
+<p class="caption">Same constant twist (v<sub>x</sub>, v<sub>y</sub>, ω). Left treats the body-frame velocity as a world-frame velocity and bolts on a separate orientation update. Right uses the SE(2) matrix exponential. Crank ω up — naive drifts in a straight line while spinning in place; SE(2) traces the arc the robot actually follows.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const naiveC = document.getElementById('naive');
+  const se2C   = document.getElementById('se2');
+  const nctx = naiveC.getContext('2d');
+  const sctx = se2C.getContext('2d');
+
+  const vxEl = document.getElementById('vx');
+  const vyEl = document.getElementById('vy');
+  const omEl = document.getElementById('om');
+  const vxV  = document.getElementById('vxV');
+  const vyV  = document.getElementById('vyV');
+  const omV  = document.getElementById('omV');
+
+  const dpr = window.devicePixelRatio || 1;
+  const PX_PER_UNIT = 55;
+  const T_MAX = 4.0;
+
+  let t = 0;
+  let lastTime = performance.now();
+  let trail1 = [];
+  let trail2 = [];
+
+  function naivePose(t, vx, vy, om) {
+    return { x: vx * t, y: vy * t, theta: om * t };
+  }
+
+  // exp(t * ξ̂) for ξ = (vx, vy, ω) in SE(2)
+  function se2Pose(t, vx, vy, om) {
+    const wt = om * t;
+    let x, y;
+    if (Math.abs(om) < 1e-5) {
+      x = vx * t;
+      y = vy * t;
+    } else {
+      const a = Math.sin(wt) / om;          // ∫₀ᵗ cos(ωs) ds
+      const b = (1 - Math.cos(wt)) / om;    // ∫₀ᵗ sin(ωs) ds
+      x = a * vx - b * vy;
+      y = b * vx + a * vy;
+    }
+    return { x, y, theta: wt };
+  }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function drawScene(ctx, w, h, pose, trail) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2, cy = h / 2;
+
+    // grid
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    for (let i = -3; i <= 3; i++) {
+      const x = cx + i * PX_PER_UNIT;
+      const y = cy + i * PX_PER_UNIT;
+      ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x, h);
+      ctx.moveTo(0, y); ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+
+    // origin
+    ctx.fillStyle = cssVar('--muted');
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // trail
+    ctx.strokeStyle = cssVar('--link');
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < trail.length; i++) {
+      const p = trail[i];
+      const px = cx + p.x * PX_PER_UNIT;
+      const py = cy - p.y * PX_PER_UNIT;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // robot
+    ctx.save();
+    ctx.translate(cx + pose.x * PX_PER_UNIT, cy - pose.y * PX_PER_UNIT);
+    ctx.rotate(-pose.theta);
+    ctx.fillStyle = cssVar('--link');
+    ctx.beginPath();
+    ctx.moveTo(13, 0);
+    ctx.lineTo(-7, 7);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-7, -7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function frame() {
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+
+    t += dt;
+    if (t > T_MAX) { t = 0; trail1 = []; trail2 = []; }
+
+    const vx = parseFloat(vxEl.value);
+    const vy = parseFloat(vyEl.value);
+    const om = parseFloat(omEl.value);
+    vxV.textContent = vx.toFixed(2);
+    vyV.textContent = vy.toFixed(2);
+    omV.textContent = om.toFixed(2);
+
+    const p1 = naivePose(t, vx, vy, om);
+    const p2 = se2Pose(t, vx, vy, om);
+    trail1.push(p1);
+    trail2.push(p2);
+
+    const [w1, h1] = fitCanvas(naiveC);
+    const [w2, h2] = fitCanvas(se2C);
+    drawScene(nctx, w1, h1, p1, trail1);
+    drawScene(sctx, w2, h2, p2, trail2);
+
+    requestAnimationFrame(frame);
+  }
+
+  function reset() { t = 0; trail1 = []; trail2 = []; }
+  vxEl.addEventListener('input', reset);
+  vyEl.addEventListener('input', reset);
+  omEl.addEventListener('input', reset);
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { /* cssVar is read each frame */ });
+
+  frame();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

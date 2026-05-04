@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The exponential map on SO(2)</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 220px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 4em; color: var(--fg); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { min-width: 0; position: relative; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>ω <input id="om" type="range" min="-6.2832" max="6.2832" step="0.01" value="2.0"><span class="val" id="omV">2.00</span></label>
+  <label>n <input id="nn" type="range" min="1" max="80" step="1" value="6"><span class="val" id="nnV">6</span></label>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">𝔰𝔬(2) ≅ ℝ &nbsp; (Lie algebra)</p>
+    <canvas id="alg"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">SO(2) &nbsp; (Lie group)</p>
+    <canvas id="grp"></canvas>
+  </div>
+</div>
+<p class="caption">The Lie algebra 𝔰𝔬(2) is a real line; the Lie group SO(2) is the unit circle. The exponential map ω ↦ R(ω) wraps the line onto the circle. Slide ω: values 2π apart map to the same rotation — the map is many-to-one. The faint polyline on the right is the limit definition (I + ωJ/n)<sup>k</sup>·e<sub>1</sub> for k = 0…n; at n = 1 it lands far from the circle, and as n grows it straightens onto the true arc. Compound interest, made visible.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const algC = document.getElementById('alg');
+  const grpC = document.getElementById('grp');
+  const ax = algC.getContext('2d');
+  const gx = grpC.getContext('2d');
+  const omEl = document.getElementById('om');
+  const omV = document.getElementById('omV');
+  const nEl = document.getElementById('nn');
+  const nV = document.getElementById('nnV');
+
+  const dpr = window.devicePixelRatio || 1;
+  let omega = parseFloat(omEl.value);
+  let nIter = parseInt(nEl.value, 10);
+  const OM_MAX = 2 * Math.PI;
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function drawAlgebra(w, h) {
+    ax.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ax.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const len = h * 0.86;
+    const PX = (len / 2) / OM_MAX;
+
+    // axis line
+    ax.strokeStyle = cssVar('--rule');
+    ax.lineWidth = 1;
+    ax.beginPath();
+    ax.moveTo(cx, cy - len / 2);
+    ax.lineTo(cx, cy + len / 2);
+    ax.stroke();
+
+    // tick marks at multiples of π/2
+    ax.font = 'italic 12px Charter, Georgia, serif';
+    ax.textAlign = 'right';
+    ax.textBaseline = 'middle';
+    for (let k = -4; k <= 4; k++) {
+      const val = k * Math.PI / 2;
+      if (Math.abs(val) > OM_MAX + 0.01) continue;
+      const y = cy - val * PX;
+      ax.strokeStyle = cssVar('--rule');
+      ax.beginPath();
+      ax.moveTo(cx - 5, y);
+      ax.lineTo(cx + 5, y);
+      ax.stroke();
+      let label;
+      if (k === 0) label = '0';
+      else if (k === 1) label = 'π/2';
+      else if (k === -1) label = '−π/2';
+      else if (k === 2) label = 'π';
+      else if (k === -2) label = '−π';
+      else if (k === 3) label = '3π/2';
+      else if (k === -3) label = '−3π/2';
+      else if (k === 4) label = '2π';
+      else if (k === -4) label = '−2π';
+      else label = '';
+      ax.fillStyle = cssVar('--muted');
+      ax.fillText(label, cx - 9, y);
+    }
+
+    // omega segment from 0 to omega
+    ax.strokeStyle = cssVar('--link');
+    ax.lineWidth = 2.5;
+    ax.globalAlpha = 0.55;
+    ax.beginPath();
+    ax.moveTo(cx, cy);
+    ax.lineTo(cx, cy - omega * PX);
+    ax.stroke();
+    ax.globalAlpha = 1;
+
+    // omega point
+    const oy = cy - omega * PX;
+    ax.fillStyle = cssVar('--link');
+    ax.beginPath();
+    ax.arc(cx, oy, 5, 0, Math.PI * 2);
+    ax.fill();
+
+    // ω label
+    ax.fillStyle = cssVar('--fg');
+    ax.font = 'italic 14px Charter, Georgia, serif';
+    ax.textAlign = 'left';
+    ax.textBaseline = 'middle';
+    ax.fillText('ω', cx + 12, oy);
+
+    // origin marker
+    ax.fillStyle = cssVar('--muted');
+    ax.beginPath();
+    ax.arc(cx, cy, 3, 0, Math.PI * 2);
+    ax.fill();
+    ax.font = 'italic 12px Charter, Georgia, serif';
+    ax.textAlign = 'left';
+    ax.fillText('0', cx + 9, cy);
+  }
+
+  function drawGroup(w, h) {
+    gx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    gx.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 * 0.78;
+
+    // unit circle
+    gx.strokeStyle = cssVar('--rule');
+    gx.lineWidth = 1;
+    gx.beginPath();
+    gx.arc(cx, cy, R, 0, Math.PI * 2);
+    gx.stroke();
+
+    // axes through origin
+    gx.strokeStyle = cssVar('--rule');
+    gx.lineWidth = 0.6;
+    gx.globalAlpha = 0.6;
+    gx.beginPath();
+    gx.moveTo(cx - R - 12, cy); gx.lineTo(cx + R + 12, cy);
+    gx.moveTo(cx, cy - R - 12); gx.lineTo(cx, cy + R + 12);
+    gx.stroke();
+    gx.globalAlpha = 1;
+
+    // identity marker (at angle 0)
+    gx.fillStyle = cssVar('--muted');
+    gx.beginPath();
+    gx.arc(cx + R, cy, 3, 0, Math.PI * 2);
+    gx.fill();
+    gx.font = 'italic 12px Charter, Georgia, serif';
+    gx.textAlign = 'left';
+    gx.textBaseline = 'middle';
+    gx.fillStyle = cssVar('--muted');
+    gx.fillText('I', cx + R + 6, cy + 1);
+
+    // arc from 0 to omega along the circle (the true exp value)
+    const dir = omega >= 0 ? 1 : -1;
+    const absOm = Math.abs(omega);
+    const STEPS = Math.max(20, Math.ceil(absOm * 60));
+    gx.strokeStyle = cssVar('--link');
+    gx.lineWidth = 2.5;
+    gx.globalAlpha = 0.55;
+    gx.beginPath();
+    for (let i = 0; i <= STEPS; i++) {
+      const t = dir * (i / STEPS) * absOm;
+      const px = cx + R * Math.cos(t);
+      const py = cy - R * Math.sin(t);
+      if (i === 0) gx.moveTo(px, py);
+      else gx.lineTo(px, py);
+    }
+    gx.stroke();
+    gx.globalAlpha = 1;
+
+    // Polyline approximation: (I + ωJ/n)^k · e₁ for k = 0..n
+    // Each step rotates and scales: applying [[1, -ω/n],[ω/n, 1]]
+    const step = omega / nIter;
+    let vxr = 1, vyr = 0;
+    const polyPts = [{x: vxr, y: vyr}];
+    for (let k = 1; k <= nIter; k++) {
+      const nx = vxr - step * vyr;
+      const ny = vyr + step * vxr;
+      vxr = nx; vyr = ny;
+      polyPts.push({x: vxr, y: vyr});
+    }
+    gx.strokeStyle = cssVar('--muted');
+    gx.lineWidth = 1.4;
+    gx.globalAlpha = 0.85;
+    gx.beginPath();
+    for (let k = 0; k < polyPts.length; k++) {
+      const px = cx + R * polyPts[k].x;
+      const py = cy - R * polyPts[k].y;
+      if (k === 0) gx.moveTo(px, py);
+      else gx.lineTo(px, py);
+    }
+    gx.stroke();
+    // tiny dots at each iteration vertex
+    gx.fillStyle = cssVar('--muted');
+    for (const p of polyPts) {
+      const px = cx + R * p.x;
+      const py = cy - R * p.y;
+      gx.beginPath();
+      gx.arc(px, py, 1.6, 0, Math.PI * 2);
+      gx.fill();
+    }
+    gx.globalAlpha = 1;
+    // endpoint of polyline (where naive integration with n steps lands)
+    const endP = polyPts[polyPts.length - 1];
+    const endX = cx + R * endP.x;
+    const endY = cy - R * endP.y;
+    gx.fillStyle = cssVar('--muted');
+    gx.beginPath();
+    gx.arc(endX, endY, 3.5, 0, Math.PI * 2);
+    gx.fill();
+
+    // exp(ω) point
+    const ex = cx + R * Math.cos(omega);
+    const ey = cy - R * Math.sin(omega);
+    gx.strokeStyle = cssVar('--link');
+    gx.lineWidth = 1.4;
+    gx.globalAlpha = 0.55;
+    gx.beginPath();
+    gx.moveTo(cx, cy);
+    gx.lineTo(ex, ey);
+    gx.stroke();
+    gx.globalAlpha = 1;
+
+    gx.fillStyle = cssVar('--link');
+    gx.beginPath();
+    gx.arc(ex, ey, 5, 0, Math.PI * 2);
+    gx.fill();
+
+    gx.fillStyle = cssVar('--fg');
+    gx.font = 'italic 13px Charter, Georgia, serif';
+    gx.textAlign = ex > cx ? 'left' : 'right';
+    gx.textBaseline = 'middle';
+    gx.fillText('exp(ω)', ex + (ex > cx ? 8 : -8), ey - 6);
+  }
+
+  function redraw() {
+    const [w1, h1] = fitCanvas(algC);
+    const [w2, h2] = fitCanvas(grpC);
+    drawAlgebra(w1, h1);
+    drawGroup(w2, h2);
+  }
+
+  omEl.addEventListener('input', () => {
+    omega = parseFloat(omEl.value);
+    omV.textContent = omega.toFixed(2);
+    redraw();
+  });
+
+  nEl.addEventListener('input', () => {
+    nIter = parseInt(nEl.value, 10);
+    nV.textContent = nIter;
+    redraw();
+  });
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  window.addEventListener('resize', redraw);
+  redraw();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

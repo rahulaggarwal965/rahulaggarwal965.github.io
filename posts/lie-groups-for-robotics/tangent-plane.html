@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tangent space at a point</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 4 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); cursor: crosshair; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<p class="panel-title">T<sub>p</sub> S² — tangent plane at a point on the sphere (drag p)</p>
+<canvas id="c"></canvas>
+<p class="caption">The tangent space at a point is the linear space that best approximates the manifold there. For a sphere embedded in ℝ³ this is literally the plane tangent to the sphere at p. Drag p around the visible hemisphere — the plane rotates to stay tangent. The two arrows e₁, e₂ are an orthonormal basis of T<sub>p</sub> S² ≅ ℝ²; every tangent vector at p is a linear combination of them.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  // p ∈ S² in world coords. Front hemisphere has z > 0.
+  let p = (() => {
+    const x = 0.32, y = 0.45;
+    return { x, y, z: Math.sqrt(1 - x*x - y*y) };
+  })();
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function tangentBasis(p) {
+    let up = { x: 0, y: 1, z: 0 };
+    if (Math.abs(p.y) > 0.96) up = { x: 1, y: 0, z: 0 };
+    const d = up.x*p.x + up.y*p.y + up.z*p.z;
+    let u = { x: up.x - d*p.x, y: up.y - d*p.y, z: up.z - d*p.z };
+    const ulen = Math.hypot(u.x, u.y, u.z);
+    u = { x: u.x/ulen, y: u.y/ulen, z: u.z/ulen };
+    const v = {
+      x: p.y*u.z - p.z*u.y,
+      y: p.z*u.x - p.x*u.z,
+      z: p.x*u.y - p.y*u.x
+    };
+    return { u, v };
+  }
+
+  function project(p3, cx, cy, R) { return [cx + R * p3.x, cy - R * p3.y]; }
+
+  function arrow(ctx, ax, ay, bx, by, color, lw, head) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+    ctx.stroke();
+    const ang = Math.atan2(by - ay, bx - ax);
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx - head * Math.cos(ang - 0.4), by - head * Math.sin(ang - 0.4));
+    ctx.lineTo(bx - head * Math.cos(ang + 0.4), by - head * Math.sin(ang + 0.4));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawGreatCircle(ctx, cx, cy, R, parametric, steps) {
+    ctx.beginPath();
+    let prev = false;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps * 2 * Math.PI;
+      const pp = parametric(t);
+      if (pp.z > 0) {
+        const [px, py] = project(pp, cx, cy, R);
+        if (!prev) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        prev = true;
+      } else prev = false;
+    }
+    ctx.stroke();
+  }
+
+  function draw() {
+    const [w, h] = fitCanvas(canvas);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 * 0.78;
+
+    // sphere outline
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // sphere grid (great circles for context)
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 0.6;
+    ctx.globalAlpha = 0.7;
+    for (let i = 0; i < 12; i++) {
+      const lon = i * Math.PI / 6;
+      drawGreatCircle(ctx, cx, cy, R, t => ({
+        x: Math.sin(t) * Math.cos(lon),
+        y: Math.cos(t),
+        z: Math.sin(t) * Math.sin(lon)
+      }), 80);
+    }
+    for (let i = 1; i < 6; i++) {
+      const lat = -Math.PI/2 + i * Math.PI / 6;
+      drawGreatCircle(ctx, cx, cy, R, t => ({
+        x: Math.cos(lat) * Math.cos(t),
+        y: Math.sin(lat),
+        z: Math.cos(lat) * Math.sin(t)
+      }), 80);
+    }
+    ctx.globalAlpha = 1;
+
+    // tangent plane
+    const { u, v } = tangentBasis(p);
+    const s = 0.55;
+    const corners = [
+      { x: p.x + s*u.x + s*v.x, y: p.y + s*u.y + s*v.y, z: p.z + s*u.z + s*v.z },
+      { x: p.x + s*u.x - s*v.x, y: p.y + s*u.y - s*v.y, z: p.z + s*u.z - s*v.z },
+      { x: p.x - s*u.x - s*v.x, y: p.y - s*u.y - s*v.y, z: p.z - s*u.z - s*v.z },
+      { x: p.x - s*u.x + s*v.x, y: p.y - s*u.y + s*v.y, z: p.z - s*u.z + s*v.z },
+    ];
+    const c2 = corners.map(c => project(c, cx, cy, R));
+
+    ctx.fillStyle = cssVar('--link');
+    ctx.globalAlpha = 0.10;
+    ctx.beginPath();
+    ctx.moveTo(c2[0][0], c2[0][1]);
+    for (let i = 1; i < 4; i++) ctx.lineTo(c2[i][0], c2[i][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = cssVar('--link');
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(c2[0][0], c2[0][1]);
+    for (let i = 1; i < 4; i++) ctx.lineTo(c2[i][0], c2[i][1]);
+    ctx.closePath();
+    ctx.stroke();
+
+    // basis vectors
+    const basisLen = 0.42;
+    const [px, py] = project(p, cx, cy, R);
+    const e1 = { x: p.x + basisLen*u.x, y: p.y + basisLen*u.y, z: p.z + basisLen*u.z };
+    const e2 = { x: p.x + basisLen*v.x, y: p.y + basisLen*v.y, z: p.z + basisLen*v.z };
+    const [e1x, e1y] = project(e1, cx, cy, R);
+    const [e2x, e2y] = project(e2, cx, cy, R);
+    arrow(ctx, px, py, e1x, e1y, cssVar('--link'), 1.8, 8);
+    arrow(ctx, px, py, e2x, e2y, cssVar('--link'), 1.8, 8);
+
+    // labels
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = 'italic 13px Charter, Georgia, serif';
+    ctx.fillText('e₁', e1x + 6, e1y + 4);
+    ctx.fillText('e₂', e2x + 6, e2y + 4);
+
+    // p marker
+    ctx.fillStyle = cssVar('--link');
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = cssVar('--fg');
+    ctx.fillText('p', px + 7, py - 6);
+
+    // T_p S² label near top of plane
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 13px Charter, Georgia, serif';
+    const labelP = c2[0];
+    ctx.fillText('T_p S²', labelP[0] + 4, labelP[1] - 4);
+  }
+
+  // drag p around the front hemisphere
+  let dragging = false;
+  function update(mx, my) {
+    if (!dragging) return;
+    const r = canvas.getBoundingClientRect();
+    const cx = r.width / 2, cy = r.height / 2;
+    const R = Math.min(r.width, r.height) / 2 * 0.78;
+    let dx = (mx - r.left - cx) / R;
+    let dy = -(my - r.top - cy) / R;
+    const r2 = dx*dx + dy*dy;
+    if (r2 >= 0.999) {
+      const len = Math.sqrt(r2);
+      dx /= len * 1.001;
+      dy /= len * 1.001;
+    }
+    const z = Math.sqrt(Math.max(0, 1 - dx*dx - dy*dy));
+    p = { x: dx, y: dy, z };
+    draw();
+  }
+  canvas.addEventListener('mousedown', e => { dragging = true; update(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', e => update(e.clientX, e.clientY));
+  window.addEventListener('mouseup', () => { dragging = false; });
+  canvas.addEventListener('touchstart', e => {
+    if (e.touches.length === 1) { dragging = true; update(e.touches[0].clientX, e.touches[0].clientY); }
+  }, { passive: true });
+  window.addEventListener('touchmove', e => {
+    if (!dragging || e.touches.length !== 1) return;
+    e.preventDefault();
+    update(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
+  window.addEventListener('touchend', () => { dragging = false; });
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  window.addEventListener('resize', draw);
+  draw();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

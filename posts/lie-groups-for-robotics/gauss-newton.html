@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gauss-Newton on SE(2)</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls button {
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  .controls .stat { font-variant-numeric: tabular-nums; color: var(--fg); }
+  canvas { width: 100%; aspect-ratio: 4 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="step">Step</button>
+  <button id="run">Run to convergence</button>
+  <button id="reset">New random initial guess</button>
+  <span>iter <span class="stat" id="iter">0</span></span>
+  <span>cost <span class="stat" id="cost">—</span></span>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">A robot at unknown pose T ∈ SE(2) takes noisy measurements b<sub>j</sub> of landmarks in its body frame. Filled dots are the world-frame landmarks L<sub>j</sub> (known). Open circles are the current estimate's predictions T·b<sub>j</sub> — where the algorithm thinks the landmarks would land if its pose guess were right. Lines are residuals. Each Gauss-Newton step linearizes the residuals in local coordinates ξ ∈ ℝ³, solves a 3×3 linear system, and retracts via T ← T·exp(ξ̂). Convergence is quadratic once the estimate is close to the truth.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const stepBtn = document.getElementById('step');
+  const runBtn = document.getElementById('run');
+  const resetBtn = document.getElementById('reset');
+  const iterEl = document.getElementById('iter');
+  const costEl = document.getElementById('cost');
+
+  // -------- Math helpers --------
+  function rotate(theta, p) {
+    const c = Math.cos(theta), s = Math.sin(theta);
+    return [c*p[0] - s*p[1], s*p[0] + c*p[1]];
+  }
+  function transform(T, p) {
+    const r = rotate(T.theta, p);
+    return [r[0] + T.x, r[1] + T.y];
+  }
+  function inverseT(T) {
+    const r = rotate(-T.theta, [-T.x, -T.y]);
+    return { x: r[0], y: r[1], theta: -T.theta };
+  }
+  function randn() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  // Solve a symmetric positive-definite 3x3 system A x = b via Gaussian elimination
+  function solve3(A, b) {
+    const M = [
+      [A[0][0], A[0][1], A[0][2], b[0]],
+      [A[1][0], A[1][1], A[1][2], b[1]],
+      [A[2][0], A[2][1], A[2][2], b[2]],
+    ];
+    for (let i = 0; i < 3; i++) {
+      let max = i;
+      for (let k = i+1; k < 3; k++) if (Math.abs(M[k][i]) > Math.abs(M[max][i])) max = k;
+      [M[i], M[max]] = [M[max], M[i]];
+      if (Math.abs(M[i][i]) < 1e-12) return [0,0,0];
+      for (let k = i+1; k < 3; k++) {
+        const f = M[k][i] / M[i][i];
+        for (let j = i; j <= 3; j++) M[k][j] -= f * M[i][j];
+      }
+    }
+    const x = [0,0,0];
+    for (let i = 2; i >= 0; i--) {
+      let s = M[i][3];
+      for (let j = i+1; j < 3; j++) s -= M[i][j] * x[j];
+      x[i] = s / M[i][i];
+    }
+    return x;
+  }
+
+  // -------- State --------
+  let landmarks = [];      // L_j in world frame
+  let bodyMeas = [];       // b_j in body frame (noisy)
+  let truePose = null;
+  let pose = null;         // current estimate
+  let trail = [];
+  let iter = 0;
+  let lastCost = NaN;
+  let running = false;
+
+  function setupScenario() {
+    const RNG = 1.7;
+    landmarks = [];
+    const M = 7;
+    for (let i = 0; i < M; i++) {
+      const a = (i / M) * 2 * Math.PI + (Math.random() - 0.5) * 0.4;
+      const r = 1.4 + Math.random() * 0.7;
+      landmarks.push([r * Math.cos(a), r * Math.sin(a)]);
+    }
+    truePose = { x: (Math.random() - 0.5) * 1.0, y: (Math.random() - 0.5) * 1.0, theta: (Math.random() - 0.5) * 2.0 };
+    const Tinv = inverseT(truePose);
+    bodyMeas = landmarks.map(L => {
+      const b = transform(Tinv, L);
+      return [b[0] + randn() * 0.04, b[1] + randn() * 0.04];
+    });
+    randomGuess();
+  }
+
+  function randomGuess() {
+    pose = {
+      x: truePose.x + (Math.random() - 0.5) * 2.5,
+      y: truePose.y + (Math.random() - 0.5) * 2.5,
+      theta: truePose.theta + (Math.random() - 0.5) * 2.4
+    };
+    trail = [{...pose}];
+    iter = 0;
+    lastCost = computeCost();
+    running = false;
+    redraw();
+  }
+
+  function computeCost() {
+    let c = 0;
+    for (let j = 0; j < landmarks.length; j++) {
+      const Tb = transform(pose, bodyMeas[j]);
+      const dx = Tb[0] - landmarks[j][0];
+      const dy = Tb[1] - landmarks[j][1];
+      c += 0.5 * (dx*dx + dy*dy);
+    }
+    return c;
+  }
+
+  function gnStep() {
+    const c = Math.cos(pose.theta), s = Math.sin(pose.theta);
+    let HTH = [[0,0,0],[0,0,0],[0,0,0]];
+    let HTr = [0,0,0];
+    for (let j = 0; j < landmarks.length; j++) {
+      const b = bodyMeas[j];
+      const Tb = transform(pose, b);
+      const r = [Tb[0] - landmarks[j][0], Tb[1] - landmarks[j][1]];
+      // H_j = R * [[1, 0, -b1], [0, 1, b0]]  (size 2x3)
+      const H = [
+        [c, -s, -c*b[1] - s*b[0]],
+        [s,  c, -s*b[1] + c*b[0]]
+      ];
+      for (let i = 0; i < 3; i++) {
+        for (let k = 0; k < 3; k++) {
+          HTH[i][k] += H[0][i]*H[0][k] + H[1][i]*H[1][k];
+        }
+        HTr[i] += H[0][i]*r[0] + H[1][i]*r[1];
+      }
+    }
+    const xi = solve3(HTH, [-HTr[0], -HTr[1], -HTr[2]]);
+    // Retract: T <- T * exp(xî)
+    const w = xi[2];
+    let dx, dy;
+    if (Math.abs(w) < 1e-7) { dx = xi[0]; dy = xi[1]; }
+    else {
+      const a = Math.sin(w) / w;
+      const bb = (1 - Math.cos(w)) / w;
+      dx = a*xi[0] - bb*xi[1];
+      dy = bb*xi[0] + a*xi[1];
+    }
+    const ct = Math.cos(pose.theta), st = Math.sin(pose.theta);
+    pose = {
+      x: pose.x + ct*dx - st*dy,
+      y: pose.y + st*dx + ct*dy,
+      theta: pose.theta + w
+    };
+    trail.push({...pose});
+    iter++;
+    lastCost = computeCost();
+    redraw();
+  }
+
+  function runToConvergence() {
+    if (running) return;
+    running = true;
+    let last = lastCost;
+    let i = 0;
+    function tick() {
+      if (!running || i > 60) { running = false; return; }
+      gnStep();
+      i++;
+      if (Math.abs(last - lastCost) < 1e-9) { running = false; return; }
+      last = lastCost;
+      setTimeout(tick, 220);
+    }
+    tick();
+  }
+
+  // -------- Drawing --------
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function w2c(p, w, h, scale) {
+    return [w/2 + p[0] * scale, h/2 - p[1] * scale];
+  }
+
+  function drawRobot(ctx, pos, w, h, scale, opacity, color) {
+    const [px, py] = w2c([pos.x, pos.y], w, h, scale);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(-pos.theta);
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(13, 0);
+    ctx.lineTo(-7, 7);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-7, -7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function redraw() {
+    const [w, h] = fitCanvas(canvas);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const scale = Math.min(w, h) / 5.5;
+
+    // grid
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    for (let i = -3; i <= 3; i++) {
+      const [gx,] = w2c([i, 0], w, h, scale);
+      const [, gy] = w2c([0, i], w, h, scale);
+      ctx.beginPath();
+      ctx.moveTo(gx, 0); ctx.lineTo(gx, h);
+      ctx.moveTo(0, gy); ctx.lineTo(w, gy);
+      ctx.stroke();
+    }
+
+    // landmarks
+    ctx.fillStyle = cssVar('--link');
+    for (const L of landmarks) {
+      const [lx, ly] = w2c(L, w, h, scale);
+      ctx.beginPath();
+      ctx.arc(lx, ly, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // residuals + predicted observations
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.globalAlpha = 0.55;
+    for (let j = 0; j < landmarks.length; j++) {
+      const Tb = transform(pose, bodyMeas[j]);
+      const [px, py] = w2c(Tb, w, h, scale);
+      const [lx, ly] = w2c(landmarks[j], w, h, scale);
+      ctx.beginPath();
+      ctx.moveTo(px, py); ctx.lineTo(lx, ly);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = cssVar('--link');
+    for (let j = 0; j < landmarks.length; j++) {
+      const Tb = transform(pose, bodyMeas[j]);
+      const [px, py] = w2c(Tb, w, h, scale);
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // trail
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = cssVar('--link');
+    ctx.globalAlpha = 0.4;
+    ctx.beginPath();
+    for (let i = 0; i < trail.length; i++) {
+      const [tx, ty] = w2c([trail[i].x, trail[i].y], w, h, scale);
+      i === 0 ? ctx.moveTo(tx, ty) : ctx.lineTo(tx, ty);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // true pose (faint, dashed-ish)
+    ctx.globalAlpha = 0.25;
+    drawRobot(ctx, truePose, w, h, scale, 0.6, cssVar('--fg'));
+    ctx.globalAlpha = 1;
+
+    // current pose
+    drawRobot(ctx, pose, w, h, scale, 1.0, cssVar('--link'));
+
+    // labels
+    iterEl.textContent = iter;
+    costEl.textContent = lastCost.toFixed(4);
+  }
+
+  stepBtn.addEventListener('click', () => { running = false; gnStep(); });
+  runBtn.addEventListener('click', runToConvergence);
+  resetBtn.addEventListener('click', randomGuess);
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  window.addEventListener('resize', redraw);
+
+  setupScenario();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

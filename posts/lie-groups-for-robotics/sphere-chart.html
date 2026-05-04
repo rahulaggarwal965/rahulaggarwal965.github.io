@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart on a sphere</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 140px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { min-width: 0; position: relative; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  #sphere { cursor: grab; }
+  #sphere:active { cursor: grabbing; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .arrow {
+    position: absolute;
+    top: 50%;
+    right: -16px;
+    transform: translate(50%, -50%);
+    color: var(--muted);
+    font-size: 18px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>patch size α
+    <input id="alpha" type="range" min="5" max="80" step="1" value="40">
+    <span class="val" id="alphaV">40°</span>
+  </label>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">Sphere (drag to rotate)</p>
+    <canvas id="sphere"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">Chart φ(U) ⊂ ℝ²</p>
+    <canvas id="chart"></canvas>
+  </div>
+</div>
+<p class="caption">A chart is a map from a patch of a manifold to a patch of flat space. Here the manifold is the unit sphere, the patch is a spherical cap of angular radius α around the marked point, and the chart is orthogonal projection onto the tangent plane at that point. Drag the sphere to slide the chart center to a different spot. Shrink α: the projected lat/long lines become indistinguishable from straight lines — that is what "locally Euclidean" means in pictures.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const sphereC = document.getElementById('sphere');
+  const chartC  = document.getElementById('chart');
+  const sctx = sphereC.getContext('2d');
+  const cctx = chartC.getContext('2d');
+
+  const alphaEl = document.getElementById('alpha');
+  const alphaV  = document.getElementById('alphaV');
+  const dpr = window.devicePixelRatio || 1;
+
+  let yaw = 0.6, pitch = 0.35;
+  let alpha = 40 * Math.PI / 180;
+
+  function v3(x, y, z) { return { x, y, z }; }
+
+  // Apply pitch (around x-axis), then yaw (around y-axis) to a point in sphere-local coords.
+  function rotate(p) {
+    const c1 = Math.cos(pitch), s1 = Math.sin(pitch);
+    const x1 = p.x;
+    const y1 = p.y * c1 - p.z * s1;
+    const z1 = p.y * s1 + p.z * c1;
+    const c2 = Math.cos(yaw), s2 = Math.sin(yaw);
+    const x2 =  x1 * c2 + z1 * s2;
+    const y2 =  y1;
+    const z2 = -x1 * s2 + z1 * c2;
+    return v3(x2, y2, z2);
+  }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function drawCurveOnCanvas(ctx, parametric, steps, condition, project, color, lw, alphaVal) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lw;
+    if (alphaVal !== undefined) ctx.globalAlpha = alphaVal;
+    ctx.beginPath();
+    let prev = false;
+    for (let i = 0; i <= steps; i++) {
+      const pl = parametric(i / steps);
+      const pw = rotate(pl);
+      if (condition(pw)) {
+        const [px, py] = project(pw);
+        if (!prev) ctx.moveTo(px, py);
+        else       ctx.lineTo(px, py);
+        prev = true;
+      } else {
+        prev = false;
+      }
+    }
+    ctx.stroke();
+    if (alphaVal !== undefined) ctx.globalAlpha = 1;
+  }
+
+  function gridParametrics() {
+    const out = [];
+    const LAT_LINES = 12;
+    const LON_LINES = 24;
+    for (let i = 1; i < LAT_LINES; i++) {
+      const lat = -Math.PI / 2 + i * (Math.PI / LAT_LINES);
+      out.push(t => {
+        const lon = -Math.PI + t * 2 * Math.PI;
+        return v3(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+      });
+    }
+    for (let i = 0; i < LON_LINES; i++) {
+      const lon = -Math.PI + i * (2 * Math.PI / LON_LINES);
+      out.push(t => {
+        const lat = -Math.PI / 2 + t * Math.PI;
+        return v3(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+      });
+    }
+    return out;
+  }
+
+  function drawSphere(w, h) {
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sctx.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 * 0.86;
+
+    // sphere outline
+    sctx.strokeStyle = cssVar('--rule');
+    sctx.lineWidth = 1;
+    sctx.beginPath();
+    sctx.arc(cx, cy, R, 0, Math.PI * 2);
+    sctx.stroke();
+
+    // grid (visible hemisphere only: pw.z > 0)
+    const project = (pw) => [cx + R * pw.x, cy - R * pw.y];
+    const visible = (pw) => pw.z > 0;
+    const inPatch = (pw) => pw.z > Math.cos(alpha);
+
+    // grid lines outside patch, faint
+    for (const f of gridParametrics()) {
+      drawCurveOnCanvas(sctx, f, 180,
+        pw => visible(pw) && !inPatch(pw),
+        project, cssVar('--rule'), 0.7, 0.9);
+    }
+    // grid lines inside patch, accent
+    for (const f of gridParametrics()) {
+      drawCurveOnCanvas(sctx, f, 180,
+        pw => visible(pw) && inPatch(pw),
+        project, cssVar('--link'), 1.2, 0.9);
+    }
+
+    // patch fill
+    sctx.fillStyle = cssVar('--link');
+    sctx.globalAlpha = 0.10;
+    sctx.beginPath();
+    for (let i = 0; i <= 96; i++) {
+      const t = i / 96 * 2 * Math.PI;
+      const x = Math.sin(alpha) * Math.cos(t);
+      const y = Math.sin(alpha) * Math.sin(t);
+      const px = cx + R * x;
+      const py = cy - R * y;
+      i === 0 ? sctx.moveTo(px, py) : sctx.lineTo(px, py);
+    }
+    sctx.closePath();
+    sctx.fill();
+    sctx.globalAlpha = 1;
+
+    // patch outline
+    sctx.strokeStyle = cssVar('--link');
+    sctx.lineWidth = 1.5;
+    sctx.beginPath();
+    for (let i = 0; i <= 96; i++) {
+      const t = i / 96 * 2 * Math.PI;
+      const x = Math.sin(alpha) * Math.cos(t);
+      const y = Math.sin(alpha) * Math.sin(t);
+      const px = cx + R * x;
+      const py = cy - R * y;
+      i === 0 ? sctx.moveTo(px, py) : sctx.lineTo(px, py);
+    }
+    sctx.closePath();
+    sctx.stroke();
+
+    // chart center marker
+    sctx.fillStyle = cssVar('--link');
+    sctx.beginPath();
+    sctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    sctx.fill();
+  }
+
+  function drawChart(w, h) {
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 * 0.86;
+
+    // patch fill
+    cctx.fillStyle = cssVar('--link');
+    cctx.globalAlpha = 0.10;
+    cctx.beginPath();
+    cctx.arc(cx, cy, R * Math.sin(alpha), 0, Math.PI * 2);
+    cctx.fill();
+    cctx.globalAlpha = 1;
+
+    // patch outline
+    cctx.strokeStyle = cssVar('--link');
+    cctx.lineWidth = 1.5;
+    cctx.beginPath();
+    cctx.arc(cx, cy, R * Math.sin(alpha), 0, Math.PI * 2);
+    cctx.stroke();
+
+    // grid lines from sphere, projected to chart (orthogonal projection to tangent plane at +z)
+    const project = (pw) => [cx + R * pw.x, cy - R * pw.y];
+    const inPatch = (pw) => pw.z > Math.cos(alpha);
+    for (const f of gridParametrics()) {
+      drawCurveOnCanvas(cctx, f, 240, inPatch, project, cssVar('--link'), 1.1, 0.85);
+    }
+
+    // chart center
+    cctx.fillStyle = cssVar('--link');
+    cctx.beginPath();
+    cctx.arc(cx, cy, 3, 0, Math.PI * 2);
+    cctx.fill();
+
+    // axes through chart origin
+    cctx.strokeStyle = cssVar('--muted');
+    cctx.lineWidth = 0.6;
+    cctx.globalAlpha = 0.45;
+    cctx.beginPath();
+    cctx.moveTo(cx - R, cy); cctx.lineTo(cx + R, cy);
+    cctx.moveTo(cx, cy - R); cctx.lineTo(cx, cy + R);
+    cctx.stroke();
+    cctx.globalAlpha = 1;
+  }
+
+  function redraw() {
+    const [w1, h1] = fitCanvas(sphereC);
+    const [w2, h2] = fitCanvas(chartC);
+    drawSphere(w1, h1);
+    drawChart(w2, h2);
+  }
+
+  // drag
+  let dragging = false, lastX = 0, lastY = 0;
+  function onDown(x, y) { dragging = true; lastX = x; lastY = y; }
+  function onMove(x, y) {
+    if (!dragging) return;
+    const dx = x - lastX, dy = y - lastY;
+    lastX = x; lastY = y;
+    const sens = 0.006;
+    yaw   += dx * sens;
+    pitch -= dy * sens;
+    const lim = Math.PI / 2 - 0.02;
+    pitch = Math.max(-lim, Math.min(lim, pitch));
+    redraw();
+  }
+  function onUp() { dragging = false; }
+
+  sphereC.addEventListener('mousedown', e => onDown(e.clientX, e.clientY));
+  window.addEventListener('mousemove', e => onMove(e.clientX, e.clientY));
+  window.addEventListener('mouseup', onUp);
+  sphereC.addEventListener('touchstart', e => { if (e.touches.length === 1) onDown(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
+  window.addEventListener('touchmove', e => {
+    if (!dragging || e.touches.length !== 1) return;
+    e.preventDefault();
+    onMove(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
+  window.addEventListener('touchend', onUp);
+
+  alphaEl.addEventListener('input', () => {
+    alpha = parseFloat(alphaEl.value) * Math.PI / 180;
+    alphaV.textContent = alphaEl.value + '°';
+    redraw();
+  });
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  window.addEventListener('resize', redraw);
+
+  redraw();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>
