@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .wrap { display: flex; flex-direction: column; gap: 0.4rem; }
+  canvas { width: 100%; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; font-size: 0.85rem; align-items: center; justify-content: center; padding: 0 0.25rem; }
+  .legend label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; user-select: none; }
+  .legend input { margin: 0; }
+  .swatch { display: inline-block; width: 16px; height: 3px; vertical-align: middle; }
+  .caption { font-size: 0.85rem; color: var(--muted); padding: 0 0.25rem; line-height: 1.45; }
+  .caption strong { color: var(--fg); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="c" height="380"></canvas>
+  <div class="legend" id="legend"></div>
+  <div class="caption" id="caption"></div>
+</div>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  const SERIES = [
+    { key: 'VF-S',    label: 'VF-S (ours)',  color: '#3a8a3a', data: [1.3954,1.0294,1.0798,1.024,0.8697,0.7934,0.8085,0.8488,0.8522,0.8082,0.8242,0.8515,0.8542,0.8583,0.8837,0.9022,0.8985,0.9072,0.9108,0.9299,0.9327,0.9575,0.9926,0.9782,0.9698,0.9585,0.9618,0.9676,0.9651,0.9621,0.9844,1.0225,1.0443,1.0664,1.0697,1.1019,1.1149,1.0992,1.1374,1.132,1.1167,1.1031,1.0814,1.0767,1.0683,1.0695,1.0855,1.0814,1.0923,1.0817,1.042,1.0444,1.0827,1.0962,1.1129,1.1136,1.105,1.0758,1.0384,1.003,1.0217,1.0252,1.0483,1.0183,1.051,1.0468,1.0441,1.0322,1.0308,1.0496,1.0743,1.0853,1.0658,1.0377,1.0188,0.9963,0.9964,1.0208,1.0226,1.0163,1.0426,1.0313,0.9973,0.9926,1.0005,1.0131,1.0367,1.0712,1.0582,1.0433,1.0043,0.9784,0.9714,0.9902,0.9989,0.9889,0.9975,1.0169,1.0082,1.0202]},
+    { key: 'VF-AD',   label: 'VF-AD',         color: '#2da6c4', data: [2.1046,1.235,1.0871,1.0592,1.0004,0.9805,0.9679,0.9902,0.9838,0.9517,0.9984,1.0317,1.0165,1.0129,1.0111,1.0317,1.0152,1.0291,1.0398,1.091,1.1143,1.1549,1.1533,1.1194,1.1038,1.0787,1.0863,1.1207,1.1337,1.1363,1.1388,1.1707,1.183,1.1749,1.1936,1.25,1.2629,1.2888,1.2915,1.289,1.257,1.2384,1.2768,1.2591,1.2466,1.2197,1.2183,1.2161,1.2356,1.2141,1.2031,1.1814,1.1898,1.1225,1.1267,1.1747,1.1736,1.1356,1.1154,1.0819,1.0963,1.101,1.0941,1.0933,1.1037,1.1012,1.0846,1.0995,1.0937,1.11,1.1212,1.1325,1.1132,1.1094,1.0849,1.0757,1.0659,1.0869,1.0652,1.079,1.0897,1.0896,1.0528,1.0577,1.0453,1.0613,1.0852,1.1125,1.1145,1.1017,1.0693,1.0466,1.0439,1.0499,1.0464,1.038,1.0538,1.0632,1.0899,1.0662]},
+    { key: 'VF',      label: 'VF (no scene token)', color: '#7a7368', data: [2.1098,1.2332,1.0851,1.0285,0.9788,0.9741,0.9758,1.0231,1.0443,0.9866,1.0039,1.0142,1.0152,0.9849,1.0144,1.0213,1.0124,1.0744,1.1148,1.1419,1.1537,1.1958,1.2059,1.1801,1.1958,1.1907,1.2424,1.2507,1.2521,1.2269,1.2474,1.2812,1.3109,1.3615,1.3664,1.4226,1.4354,1.4506,1.4513,1.4719,1.4999,1.4385,1.3972,1.3776,1.3472,1.3415,1.3416,1.3043,1.2875,1.2752,1.2308,1.2017,1.2271,1.2,1.2103,1.1329,1.1308,1.1247,1.1177,1.1035,1.1275,1.1179,1.1132,1.106,1.1095,1.1166,1.109,1.1056,1.1106,1.1014,1.086,1.0916,1.073,1.091,1.0888,1.0888,1.1114,1.1147,1.0843,1.1015,1.0914,1.095,1.0737,1.0743,1.0835,1.0827,1.0621,1.0887,1.0763,1.0664,1.0675,1.0585,1.0719,1.0736,1.0689,1.0615,1.0433,1.0723,1.0811,1.0915]},
+    { key: 'GameNGen',label: 'GameNGen (reimpl.)', color: '#8a5a3c', data: [2.1315,1.2648,1.0999,1.066,0.9897,0.9687,0.966,0.9903,1.0059,0.9632,0.9937,1.0126,1.0164,0.9957,1.0599,1.01,1.0491,1.1122,1.1571,1.2289,1.2191,1.1997,1.1432,1.1556,1.108,1.1586,1.2028,1.2906,1.232,1.2559,1.2564,1.2358,1.3697,1.3527,1.4265,1.4665,1.493,1.4575,1.3504,1.3886,1.4062,1.4074,1.3902,1.3316,1.269,1.2276,1.1891,1.1616,1.199,1.1595,1.1422,1.1559,1.1881,1.167,1.1799,1.182,1.1824,1.1676,1.1605,1.1501,1.1642,1.1775,1.1464,1.1312,1.1238,1.1182,1.0931,1.1134,1.1198,1.1323,1.1299,1.1341,1.1171,1.1036,1.1178,1.1247,1.1363,1.152,1.129,1.1301,1.1054,1.0879,1.0501,1.062,1.0728,1.0853,1.0794,1.1088,1.107,1.0705,1.0761,1.0703,1.087,1.1,1.0895,1.0876,1.0465,1.0575,1.0655,1.0622]},
+    { key: 'VF-SC',   label: 'VF-SC (CLS-only ablation)', color: '#cf8a3a', data: [2.3477,1.4779,1.3345,1.3201,1.2806,1.2359,1.3216,1.2854,1.2916,1.23,1.2575,1.2906,1.3274,1.3171,1.2723,1.3197,1.3005,1.3637,1.3229,1.3557,1.3223,1.369,1.4046,1.3749,1.2842,1.2999,1.326,1.3439,1.368,1.3371,1.2875,1.3754,1.3929,1.3868,1.3855,1.3602,1.3814,1.3897,1.3537,1.4046,1.3952,1.3929,1.4648,1.4088,1.47,1.4149,1.4377,1.4552,1.4679,1.5015,1.5325,1.533,1.5792,1.5741,1.5738,1.5797,1.5586,1.5128,1.5113,1.4805,1.5255,1.5194,1.4967,1.4584,1.4451,1.4295,1.4161,1.4284,1.4191,1.4235,1.4374,1.4373,1.4157,1.4073,1.385,1.3904,1.3988,1.3992,1.381,1.3764,1.3555,1.3388,1.2788,1.2799,1.2852,1.2792,1.2918,1.3187,1.3233,1.2808,1.2715,1.2384,1.2722,1.2713,1.2656,1.2444,1.2343,1.2221,1.2122,1.2165]},
+  ];
+
+  const visible = new Set(SERIES.map(s => s.key));
+
+  const X_SCALE = 2;
+  const Y_MIN = 0.7, Y_MAX = 1.7;
+  const PAD = { l: 44, r: 14, t: 14, b: 30 };
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.clientWidth;
+    const cssH = 380;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    canvas.style.height = cssH + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function xPx(t, w) { return PAD.l + (t / 199) * (w - PAD.l - PAD.r); }
+  function yPx(v, h) { return PAD.t + (1 - (v - Y_MIN) / (Y_MAX - Y_MIN)) * (h - PAD.t - PAD.b); }
+
+  function draw() {
+    const w = canvas.clientWidth, h = 380;
+    const fg = cssVar('--fg'), muted = cssVar('--muted'), rule = cssVar('--rule'), bg = cssVar('--bg');
+
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = 'rgba(80, 130, 200, 0.10)';
+    ctx.fillRect(xPx(25*X_SCALE, w), PAD.t, xPx(100*X_SCALE, w) - xPx(25*X_SCALE, w), h - PAD.t - PAD.b);
+    ctx.fillStyle = 'rgba(220, 170, 60, 0.10)';
+    ctx.fillRect(xPx(100*X_SCALE, w), PAD.t, xPx(180*X_SCALE, w) - xPx(100*X_SCALE, w), h - PAD.t - PAD.b);
+
+    ctx.fillStyle = muted;
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('high-drift window', (xPx(25*X_SCALE, w) + xPx(100*X_SCALE, w)) / 2, PAD.t + 11);
+    ctx.fillText('scene-evolution window', (xPx(100*X_SCALE, w) + xPx(180*X_SCALE, w)) / 2, PAD.t + 11);
+
+    ctx.strokeStyle = rule;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let v = 0.8; v <= 1.6; v += 0.2) {
+      const y = yPx(v, h);
+      ctx.moveTo(PAD.l, y); ctx.lineTo(w - PAD.r, y);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = muted;
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const y1 = yPx(1, h);
+    ctx.moveTo(PAD.l, y1); ctx.lineTo(w - PAD.r, y1); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = muted;
+    ctx.textAlign = 'left';
+    ctx.fillText('𝒟(t) = 1', w - PAD.r - 56, y1 - 4);
+
+    ctx.strokeStyle = rule;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD.l, PAD.t); ctx.lineTo(PAD.l, h - PAD.b);
+    ctx.moveTo(PAD.l, h - PAD.b); ctx.lineTo(w - PAD.r, h - PAD.b);
+    ctx.stroke();
+
+    ctx.fillStyle = muted;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    for (let v = 0.8; v <= 1.6; v += 0.2) {
+      ctx.fillText(v.toFixed(1), PAD.l - 6, yPx(v, h) + 3);
+    }
+    ctx.textAlign = 'center';
+    for (let t = 0; t <= 200; t += 50) {
+      ctx.fillText(String(t), xPx(t, w), h - PAD.b + 14);
+    }
+    ctx.fillText('frame index t', (PAD.l + w - PAD.r) / 2, h - 4);
+
+    ctx.save();
+    ctx.translate(12, (PAD.t + h - PAD.b) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillText('drift 𝒟(t)', 0, 0);
+    ctx.restore();
+
+    for (const s of SERIES) {
+      if (!visible.has(s.key)) continue;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.key === 'VF-S' ? 2.4 : 1.6;
+      ctx.beginPath();
+      for (let i = 0; i < s.data.length; i++) {
+        const t = i * X_SCALE;
+        const v = Math.max(Y_MIN, Math.min(Y_MAX, s.data[i]));
+        const x = xPx(t, w), y = yPx(v, h);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  const legend = document.getElementById('legend');
+  for (const s of SERIES) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true;
+    cb.addEventListener('change', () => {
+      if (cb.checked) visible.add(s.key); else visible.delete(s.key);
+      draw();
+    });
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
+    sw.style.background = s.color;
+    label.appendChild(cb);
+    label.appendChild(sw);
+    label.appendChild(document.createTextNode(' ' + s.label));
+    legend.appendChild(label);
+  }
+
+  document.getElementById('caption').innerHTML =
+    'Lower is better. <strong>VF-S</strong> stays beneath 𝒟(t)=1 — closer to the future frame than the starting frame is — through most of the high-drift window where the scene has not yet meaningfully evolved.';
+
+  window.addEventListener('resize', resize);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  resize();
+
+  function postHeight() {
+    parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>
