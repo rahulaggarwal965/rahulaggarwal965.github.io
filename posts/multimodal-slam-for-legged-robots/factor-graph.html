@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factor graph construction</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 240px; }
+  .controls input[type=range] { accent-color: var(--link); flex: 1; min-width: 120px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 2.5em; color: var(--fg); font-size: 12px; text-align: right; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .legend { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 14px; height: 3px; display: inline-block; border-radius: 1px; }
+  .dot-swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>step k <input id="k" type="range" min="0" max="40" step="1" value="0"><span class="val" id="kV">0</span></label>
+  <button id="play">Play</button>
+  <button id="reset">Reset</button>
+</div>
+<canvas id="c"></canvas>
+<div class="legend">
+  <span><span class="dot-swatch" style="background:var(--fg)"></span> robot state X<sub>i</sub></span>
+  <span><span class="dot-swatch" style="background:#3b78c4"></span> contact c<sub>i</sub></span>
+  <span><span class="dot-swatch" style="background:#b04545"></span> landmark s<sub>ℓ</sub></span>
+  <span><span class="swatch" style="background:#d18a3a"></span> IMU</span>
+  <span><span class="swatch" style="background:#5fa15f"></span> forward-kinematics</span>
+  <span><span class="swatch" style="background:#3b78c4"></span> rigid contact</span>
+  <span><span class="swatch" style="background:#7e57c2"></span> lidar</span>
+  <span><span class="swatch" style="background:#b04545"></span> semantic</span>
+  <span><span class="swatch" style="background:var(--fg);height:1px;border-top:2px dashed var(--fg)"></span> loop closure</span>
+</div>
+<p class="caption">A factor graph for a short trajectory, built incrementally as sensor measurements arrive. Each circle is a variable to estimate; each colored line is a factor — a residual that ties variables together with a covariance. Drag the slider through the timeline (or hit Play). The optimizer's job is to find variable values that jointly minimize the squared residuals across every factor present.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const kEl = document.getElementById('k');
+  const kV = document.getElementById('kV');
+  const playBtn = document.getElementById('play');
+  const resetBtn = document.getElementById('reset');
+
+  // Build a fixed scenario with N states.
+  const N = 8;
+  // Three legs share contact tracks. Each track is a list of (start_state, end_state) for "rigid" intervals.
+  // To keep it readable, we use 1 contact node per state, and rigid edges within each "stance" period.
+  // Define stance segments per leg.
+  const legs = [
+    { name: 'FL', stance: [[0,2],[3,5],[6,7]] },
+    { name: 'FR', stance: [[0,1],[2,4],[5,7]] },
+    { name: 'RL', stance: [[1,3],[4,6],[7,7]] },
+    { name: 'RR', stance: [[0,2],[3,5],[6,7]] },
+  ];
+  // landmarks: which states see them
+  const landmarks = [
+    { idx: 0, sees: [1,2,3,4] },
+    { idx: 1, sees: [3,4,5,6] },
+  ];
+  // lidar keyframe states: every 2 states is a keyframe
+  const keyframes = [0, 2, 4, 6];
+  // loop closure: state 7 closes to state 0
+  const loopClosure = [7, 0];
+
+  // Build a sequence of "events" -- each event is one factor being added.
+  // event types: 'prior', 'imu', 'fk', 'contact', 'lidar', 'semantic', 'loop'
+  function buildEvents() {
+    const events = [];
+    events.push({ kind: 'prior', state: 0 });
+    for (let i = 1; i <= N - 1; i++) {
+      events.push({ kind: 'imu', a: i - 1, b: i });
+      // lidar: factor between state i and the most recent keyframe <= i
+      const kf = [...keyframes].filter(k => k <= i).pop();
+      if (kf !== undefined && kf !== i) events.push({ kind: 'lidar', a: kf, b: i });
+      // forward-kin factors for each leg if leg is in stance at state i
+      legs.forEach((leg, li) => {
+        for (const [s, e] of leg.stance) {
+          if (i >= s && i <= e) {
+            events.push({ kind: 'fk', state: i, leg: li });
+          }
+        }
+      });
+      // rigid contact factors: connecting consecutive contact nodes within a stance
+      legs.forEach((leg, li) => {
+        for (const [s, e] of leg.stance) {
+          if (i > s && i <= e) {
+            events.push({ kind: 'contact', leg: li, a: i - 1, b: i });
+          }
+        }
+      });
+      // semantic
+      landmarks.forEach((lm, li) => {
+        if (lm.sees.includes(i)) events.push({ kind: 'semantic', state: i, lm: li });
+      });
+    }
+    events.push({ kind: 'loop', a: loopClosure[0], b: loopClosure[1] });
+    return events;
+  }
+  const events = buildEvents();
+  kEl.max = events.length;
+  kEl.value = 0;
+
+  // playback
+  let playing = false;
+  let lastPlayTime = 0;
+  playBtn.addEventListener('click', () => {
+    playing = !playing;
+    playBtn.textContent = playing ? 'Pause' : 'Play';
+    lastPlayTime = performance.now();
+    if (playing && parseInt(kEl.value, 10) >= events.length) kEl.value = 0;
+  });
+  resetBtn.addEventListener('click', () => {
+    kEl.value = 0;
+    playing = false;
+    playBtn.textContent = 'Play';
+    draw();
+  });
+  kEl.addEventListener('input', () => { playing = false; playBtn.textContent = 'Play'; draw(); });
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  // colors
+  const COL = {
+    state: () => cssVar('--fg'),
+    landmark: '#b04545',
+    contact: '#3b78c4',
+    imu: '#d18a3a',
+    fk: '#5fa15f',
+    rigid: '#3b78c4',
+    lidar: '#7e57c2',
+    semantic: '#b04545',
+    loop: () => cssVar('--fg'),
+  };
+
+  function draw() {
+    const [w, h] = fitCanvas();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const k = parseInt(kEl.value, 10);
+    kV.textContent = String(k);
+
+    // layout
+    const PAD_X = 50;
+    const PAD_TOP = 40;
+    const PAD_BOT = 40;
+    const xs = [];
+    for (let i = 0; i < N; i++) xs.push(PAD_X + (w - 2*PAD_X) * (i / (N - 1)));
+    const yState = h * 0.45;
+    const yLandmark = PAD_TOP + 14;
+    const yContactBase = h - PAD_BOT - 10;
+    const legCount = legs.length;
+    const yLeg = i => yContactBase - (legCount - 1 - i) * 16;
+
+    // Determine which factors are active up to event k
+    const active = events.slice(0, k);
+    function has(kind, pred) { return active.some(e => e.kind === kind && pred(e)); }
+
+    // Collect node existence:
+    // states: state i exists if step has reached the event introducing it (prior for state 0, imu .b = i for i > 0)
+    const stateExists = new Array(N).fill(false);
+    if (active.some(e => e.kind === 'prior' && e.state === 0)) stateExists[0] = true;
+    active.forEach(e => {
+      if (e.kind === 'imu') stateExists[e.b] = true;
+    });
+    // landmark existence: any semantic factor referencing it
+    const lmExists = landmarks.map((_, li) => active.some(e => e.kind === 'semantic' && e.lm === li));
+    // contact existence: any fk factor referencing the leg/state
+    const contactExists = {};
+    active.forEach(e => {
+      if (e.kind === 'fk') contactExists[`${e.leg}-${e.state}`] = true;
+    });
+
+    // Draw factors first (under the nodes)
+    function drawEdge(x1, y1, x2, y2, color, width = 2, dashed = false) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      if (dashed) ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      if (dashed) ctx.setLineDash([]);
+    }
+
+    // squared little factor marker on the midpoint of an edge
+    function factorBox(x1, y1, x2, y2, color) {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      ctx.fillStyle = color;
+      ctx.fillRect(mx - 3, my - 3, 6, 6);
+    }
+
+    // IMU factors
+    active.filter(e => e.kind === 'imu').forEach(e => {
+      drawEdge(xs[e.a], yState, xs[e.b], yState, COL.imu, 2.5);
+      factorBox(xs[e.a], yState, xs[e.b], yState, COL.imu);
+    });
+    // Lidar factors (curve above states)
+    active.filter(e => e.kind === 'lidar').forEach(e => {
+      const x1 = xs[e.a], x2 = xs[e.b];
+      const cy = yState - 36;
+      ctx.strokeStyle = COL.lidar;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x1, yState);
+      ctx.bezierCurveTo(x1, cy, x2, cy, x2, yState);
+      ctx.stroke();
+      factorBox(x1, cy + 2, x2, cy + 2, COL.lidar);
+    });
+    // FK factors (vertical line from state to contact node for that leg)
+    active.filter(e => e.kind === 'fk').forEach(e => {
+      const y = yLeg(e.leg);
+      drawEdge(xs[e.state], yState, xs[e.state], y, COL.fk, 1.8);
+      factorBox(xs[e.state], yState, xs[e.state], y, COL.fk);
+    });
+    // Rigid contact factors (between contact nodes within a leg, horizontally)
+    active.filter(e => e.kind === 'contact').forEach(e => {
+      const y = yLeg(e.leg);
+      drawEdge(xs[e.a], y, xs[e.b], y, COL.rigid, 2);
+      factorBox(xs[e.a], y, xs[e.b], y, COL.rigid);
+    });
+    // Semantic factors (state to landmark above)
+    active.filter(e => e.kind === 'semantic').forEach(e => {
+      const lmX = xs[Math.round((landmarks[e.lm].sees[0] + landmarks[e.lm].sees.slice(-1)[0]) / 2)];
+      drawEdge(xs[e.state], yState, lmX, yLandmark, COL.semantic, 1.6);
+    });
+    // Loop closure (large arc, dashed)
+    active.filter(e => e.kind === 'loop').forEach(e => {
+      const x1 = xs[e.a], x2 = xs[e.b];
+      const cy = yState - 70;
+      ctx.strokeStyle = COL.loop();
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, yState);
+      ctx.bezierCurveTo(x1, cy, x2, cy, x2, yState);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+
+    // prior at state 0: a small triangle to the left
+    if (active.some(e => e.kind === 'prior')) {
+      ctx.fillStyle = cssVar('--fg');
+      const x = xs[0] - 24, y = yState;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 6);
+      ctx.lineTo(x, y + 6);
+      ctx.lineTo(x + 10, y);
+      ctx.closePath();
+      ctx.fill();
+      drawEdge(x + 10, y, xs[0], y, cssVar('--fg'), 1.5);
+    }
+
+    // draw state nodes
+    for (let i = 0; i < N; i++) {
+      if (!stateExists[i]) continue;
+      ctx.fillStyle = cssVar('--bg');
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(xs[i], yState, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = cssVar('--fg');
+      ctx.font = '11px Charter, Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`X${sub(i)}`, xs[i], yState + 26);
+    }
+
+    // contact nodes per leg
+    legs.forEach((leg, li) => {
+      const y = yLeg(li);
+      for (let i = 0; i < N; i++) {
+        if (contactExists[`${li}-${i}`]) {
+          ctx.fillStyle = COL.contact;
+          ctx.beginPath();
+          ctx.arc(xs[i], y, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      // leg label
+      ctx.fillStyle = cssVar('--muted');
+      ctx.font = 'italic 10px Charter, Georgia, serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(leg.name, 6, y + 3);
+    });
+
+    // landmarks
+    landmarks.forEach((lm, li) => {
+      if (!lmExists[li]) return;
+      const x = xs[Math.round((lm.sees[0] + lm.sees.slice(-1)[0]) / 2)];
+      ctx.fillStyle = COL.landmark;
+      ctx.beginPath();
+      ctx.arc(x, yLandmark, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = cssVar('--muted');
+      ctx.font = '11px Charter, Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`s${sub(li + 1)}`, x, yLandmark - 10);
+    });
+
+    ctx.textAlign = 'left';
+    // current event label
+    if (k > 0 && k <= events.length) {
+      const e = events[k - 1];
+      const txt = describeEvent(e);
+      ctx.fillStyle = cssVar('--fg');
+      ctx.font = '12px ui-monospace, Menlo, monospace';
+      ctx.fillText(`+ ${txt}`, 12, h - 10);
+    }
+  }
+
+  function sub(n) {
+    const map = ['₀','₁','₂','₃','₄','₅','₆','₇','₈','₉'];
+    return String(n).split('').map(d => map[+d]).join('');
+  }
+
+  function describeEvent(e) {
+    switch (e.kind) {
+      case 'prior': return `prior on X${sub(e.state)}`;
+      case 'imu': return `IMU factor X${sub(e.a)}–X${sub(e.b)}`;
+      case 'lidar': return `lidar factor X${sub(e.a)}–X${sub(e.b)}`;
+      case 'fk': return `forward-kin factor (${legs[e.leg].name}) at X${sub(e.state)}`;
+      case 'contact': return `rigid contact (${legs[e.leg].name}) X${sub(e.a)}–X${sub(e.b)}`;
+      case 'semantic': return `semantic factor X${sub(e.state)} – s${sub(e.lm + 1)}`;
+      case 'loop': return `loop closure X${sub(e.a)}–X${sub(e.b)}`;
+    }
+    return '';
+  }
+
+  function tick(now) {
+    if (playing) {
+      if (now - lastPlayTime > 220) {
+        lastPlayTime = now;
+        let cur = parseInt(kEl.value, 10);
+        if (cur < events.length) {
+          kEl.value = cur + 1;
+        } else {
+          playing = false;
+          playBtn.textContent = 'Play';
+        }
+      }
+    }
+    draw();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

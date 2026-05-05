@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lidar scan</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 110px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .controls select {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 3px 6px;
+  }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button.active { color: var(--link); border-color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>scene
+    <select id="scene">
+      <option value="room">cluttered room</option>
+      <option value="corridor">long corridor (degenerate)</option>
+      <option value="open">open field (degenerate)</option>
+    </select>
+  </label>
+  <label>rays <input id="N" type="range" min="32" max="360" step="2" value="180"><span class="val" id="NV">180</span></label>
+  <label>range noise σ <input id="sigma" type="range" min="0" max="0.20" step="0.005" value="0.02"><span class="val" id="sigmaV">0.020</span></label>
+  <button id="rays" class="active">show rays</button>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">A 2D lidar fires laser rays in every direction and reports the distance to the first thing each one hits. The collection of return points is a <em>scan</em>: a sparse, noisy snapshot of nearby geometry. Drag the robot. In a cluttered room, the scan has corners, doorframes, and obstacles — features the registration can lock onto. In a corridor the scan collapses to two parallel lines that are invariant under translation along the corridor's axis — moving forward looks identical to standing still. In an open field, almost nothing returns within range. The latter two are <em>information-poor</em>, not noisy: a denser lidar would not help.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const sceneEl = document.getElementById('scene');
+  const NEl = document.getElementById('N');
+  const NV = document.getElementById('NV');
+  const sigmaEl = document.getElementById('sigma');
+  const sigmaV  = document.getElementById('sigmaV');
+  const raysBtn = document.getElementById('rays');
+
+  let showRays = true;
+  raysBtn.addEventListener('click', () => {
+    showRays = !showRays;
+    raysBtn.classList.toggle('active', showRays);
+    draw();
+  });
+
+  function randn() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  // Build scenes. Each scene is { segments: [[ax,ay,bx,by],...], bounds: [xmin, xmax, ymin, ymax] }.
+  function buildRoom() {
+    const segs = [];
+    // outer walls
+    segs.push([-4, -2.5, 4, -2.5]);
+    segs.push([4, -2.5, 4, 2.5]);
+    segs.push([4, 2.5, -4, 2.5]);
+    segs.push([-4, 2.5, -4, -2.5]);
+    // table in middle
+    segs.push([-1.0, -0.5, 1.0, -0.5]);
+    segs.push([1.0, -0.5, 1.0, 0.5]);
+    segs.push([1.0, 0.5, -1.0, 0.5]);
+    segs.push([-1.0, 0.5, -1.0, -0.5]);
+    // chair/cabinet
+    segs.push([-3.0, 1.5, -2.0, 1.5]);
+    segs.push([-2.0, 1.5, -2.0, 2.2]);
+    // pillar
+    segs.push([2.5, 1.0, 2.8, 1.0]);
+    segs.push([2.8, 1.0, 2.8, 1.4]);
+    segs.push([2.8, 1.4, 2.5, 1.4]);
+    segs.push([2.5, 1.4, 2.5, 1.0]);
+    return { segments: segs, bounds: [-4.5, 4.5, -2.8, 2.8], spawn: [-2.7, -1.4] };
+  }
+  function buildCorridor() {
+    const segs = [];
+    segs.push([-12, -1.0, 12, -1.0]);
+    segs.push([-12,  1.0, 12,  1.0]);
+    segs.push([-12, -1.0, -12, 1.0]);
+    segs.push([ 12, -1.0,  12, 1.0]);
+    return { segments: segs, bounds: [-7, 7, -1.6, 1.6], spawn: [0, 0] };
+  }
+  function buildOpen() {
+    const segs = [];
+    // very distant walls (outside max range)
+    segs.push([-50, -25, 50, -25]);
+    segs.push([50, -25, 50, 25]);
+    segs.push([50, 25, -50, 25]);
+    segs.push([-50, 25, -50, -25]);
+    // a single distant feature
+    segs.push([8, 0, 8.4, 0.4]);
+    return { segments: segs, bounds: [-6, 6, -3.5, 3.5], spawn: [0, 0] };
+  }
+
+  let scene;
+  function updateScene() {
+    const k = sceneEl.value;
+    scene = k === 'room' ? buildRoom() : k === 'corridor' ? buildCorridor() : buildOpen();
+    // always reset to scene-defined spawn point on scene change so the robot starts in a sensible spot
+    robot.x = scene.spawn[0];
+    robot.y = scene.spawn[1];
+    draw();
+  }
+  sceneEl.addEventListener('change', updateScene);
+  NEl.addEventListener('input', () => draw());
+  sigmaEl.addEventListener('input', () => draw());
+
+  // Robot position (starts outside any obstacle in the room scene)
+  const robot = { x: -2.7, y: -1.4 };
+  const MAX_RANGE = 6.0;
+
+  // ray-segment intersection in world coords; returns t>0 or Infinity
+  function intersect(ox, oy, dx, dy, ax, ay, bx, by) {
+    const sx = bx - ax, sy = by - ay;
+    const det = sy * dx - sx * dy;
+    if (Math.abs(det) < 1e-9) return Infinity;
+    const t = ((ax - ox) * sy - (ay - oy) * sx) / det;
+    const u = ((ax - ox) * dy - (ay - oy) * dx) / det;
+    if (t <= 0 || u < 0 || u > 1) return Infinity;
+    return t;
+  }
+
+  function castScan(N, sigma) {
+    const points = [];
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * 2 * Math.PI;
+      const dx = Math.cos(a), dy = Math.sin(a);
+      let tmin = MAX_RANGE;
+      for (const [ax, ay, bx, by] of scene.segments) {
+        const t = intersect(robot.x, robot.y, dx, dy, ax, ay, bx, by);
+        if (t < tmin) tmin = t;
+      }
+      if (tmin >= MAX_RANGE) {
+        points.push(null);
+      } else {
+        const r = tmin + sigma * randn();
+        if (r > MAX_RANGE || r < 0.05) points.push(null);
+        else points.push([robot.x + dx * r, robot.y + dy * r, a]);
+      }
+    }
+    return points;
+  }
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  // pixel <-> world transform
+  let W2P, P2W;
+  function setupTransform(w, h) {
+    const [xmin, xmax, ymin, ymax] = scene.bounds;
+    const PAD = 14;
+    const sx = (w - 2*PAD) / (xmax - xmin);
+    const sy = (h - 2*PAD) / (ymax - ymin);
+    const s = Math.min(sx, sy);
+    const cxp = (w - s * (xmax + xmin)) / 2;
+    const cyp = (h + s * (ymax + ymin)) / 2;
+    W2P = (x, y) => [cxp + x * s, cyp - y * s];
+    P2W = (px, py) => [(px - cxp) / s, -(py - cyp) / s];
+  }
+
+  function draw() {
+    const [w, h] = fitCanvas();
+    setupTransform(w, h);
+
+    NV.textContent = String(NEl.value);
+    sigmaV.textContent = parseFloat(sigmaEl.value).toFixed(3);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // walls
+    ctx.strokeStyle = cssVar('--fg');
+    ctx.lineWidth = 1.5;
+    for (const [ax, ay, bx, by] of scene.segments) {
+      const [px1, py1] = W2P(ax, ay);
+      const [px2, py2] = W2P(bx, by);
+      ctx.beginPath();
+      ctx.moveTo(px1, py1);
+      ctx.lineTo(px2, py2);
+      ctx.stroke();
+    }
+
+    // scan
+    const N = parseInt(NEl.value, 10);
+    const sigma = parseFloat(sigmaEl.value);
+    const points = castScan(N, sigma);
+
+    // rays
+    if (showRays) {
+      ctx.strokeStyle = cssVar('--link');
+      ctx.globalAlpha = 0.32;
+      ctx.lineWidth = 1;
+      const [rx, ry] = W2P(robot.x, robot.y);
+      for (const p of points) {
+        if (!p) continue;
+        const [hx, hy] = W2P(p[0], p[1]);
+        ctx.beginPath();
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(hx, hy);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // hit points
+    ctx.fillStyle = cssVar('--link');
+    for (const p of points) {
+      if (!p) continue;
+      const [hx, hy] = W2P(p[0], p[1]);
+      ctx.beginPath();
+      ctx.arc(hx, hy, 1.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // robot
+    const [rxp, ryp] = W2P(robot.x, robot.y);
+    ctx.fillStyle = cssVar('--fg');
+    ctx.beginPath();
+    ctx.arc(rxp, ryp, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = cssVar('--bg');
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // count of returns
+    let returned = 0;
+    for (const p of points) if (p) returned++;
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = '13px ui-monospace, Menlo, monospace';
+    ctx.fillText(`returns: ${returned} / ${N}`, 12, 20);
+  }
+
+  // dragging
+  let dragging = false;
+  function getMouseWorld(evt) {
+    const rect = canvas.getBoundingClientRect();
+    const px = (evt.clientX - rect.left);
+    const py = (evt.clientY - rect.top);
+    return P2W(px, py);
+  }
+  canvas.addEventListener('mousedown', e => {
+    dragging = true;
+    const [x, y] = getMouseWorld(e);
+    robot.x = Math.max(scene.bounds[0] + 0.2, Math.min(scene.bounds[1] - 0.2, x));
+    robot.y = Math.max(scene.bounds[2] + 0.2, Math.min(scene.bounds[3] - 0.2, y));
+    draw();
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const [x, y] = getMouseWorld(e);
+    robot.x = Math.max(scene.bounds[0] + 0.2, Math.min(scene.bounds[1] - 0.2, x));
+    robot.y = Math.max(scene.bounds[2] + 0.2, Math.min(scene.bounds[3] - 0.2, y));
+    draw();
+  });
+  canvas.addEventListener('mouseup', () => { dragging = false; });
+  canvas.addEventListener('mouseleave', () => { dragging = false; });
+  // touch
+  canvas.addEventListener('touchstart', e => {
+    if (!e.touches[0]) return;
+    e.preventDefault();
+    dragging = true;
+    const rect = canvas.getBoundingClientRect();
+    const [x, y] = P2W(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+    robot.x = Math.max(scene.bounds[0] + 0.2, Math.min(scene.bounds[1] - 0.2, x));
+    robot.y = Math.max(scene.bounds[2] + 0.2, Math.min(scene.bounds[3] - 0.2, y));
+    draw();
+  }, { passive: false });
+  canvas.addEventListener('touchmove', e => {
+    if (!dragging || !e.touches[0]) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const [x, y] = P2W(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+    robot.x = Math.max(scene.bounds[0] + 0.2, Math.min(scene.bounds[1] - 0.2, x));
+    robot.y = Math.max(scene.bounds[2] + 0.2, Math.min(scene.bounds[3] - 0.2, y));
+    draw();
+  }, { passive: false });
+  canvas.addEventListener('touchend', () => { dragging = false; });
+
+  window.addEventListener('resize', draw);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  updateScene();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

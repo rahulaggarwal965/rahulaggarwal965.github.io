@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robust cost functions</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 130px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .panel { min-width: 0; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .legend { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 14px; height: 3px; display: inline-block; border-radius: 1px; }
+  @media (max-width: 540px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>threshold δ <input id="d" type="range" min="0.4" max="3" step="0.05" value="1.0"><span class="val" id="dV">1.00</span></label>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">cost ρ(r)</p>
+    <canvas id="cost"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">influence ψ(r) = ρ′(r)</p>
+    <canvas id="inf"></canvas>
+  </div>
+</div>
+<div class="legend">
+  <span><span class="swatch" style="background:#888"></span> L<sub>2</sub></span>
+  <span><span class="swatch" style="background:#d18a3a"></span> Huber</span>
+  <span><span class="swatch" style="background:#7e57c2"></span> Cauchy</span>
+</div>
+<p class="caption">A measurement's <em>influence</em> on the optimization is the slope of its cost: it tells you how hard a residual r pulls on the variables. L<sub>2</sub> says <em>every</em> residual pulls in proportion to its size, so a single huge residual pulls the hardest of all — exactly what you do not want from a known-bad measurement. Huber and Cauchy cap or shrink that influence beyond a threshold δ. The optimizer still listens to small residuals normally; it just stops letting one wild measurement steamroll the rest.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const costC = document.getElementById('cost');
+  const infC  = document.getElementById('inf');
+  const cctx = costC.getContext('2d');
+  const ictx = infC.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const dEl = document.getElementById('d');
+  const dV  = document.getElementById('dV');
+
+  function L2(r)    { return r*r/2; }
+  function L2psi(r) { return r; }
+  function Huber(r, d) {
+    const a = Math.abs(r);
+    return a <= d ? r*r/2 : d*(a - d/2);
+  }
+  function Huberpsi(r, d) {
+    return Math.abs(r) <= d ? r : d * Math.sign(r);
+  }
+  function Cauchy(r, d)   { return d*d/2 * Math.log(1 + (r/d)**2); }
+  function Cauchypsi(r, d){ return r / (1 + (r/d)**2); }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = r.width * dpr;
+    c.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function plot(ctx, w, h, fns, ymin, ymax, xmin, xmax, d) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const PAD_L = 36, PAD_R = 8, PAD_T = 10, PAD_B = 22;
+    const sx = (w - PAD_L - PAD_R) / (xmax - xmin);
+    const sy = (h - PAD_T - PAD_B) / (ymax - ymin);
+    function W2P(x, y) { return [PAD_L + (x - xmin) * sx, h - PAD_B - (y - ymin) * sy]; }
+
+    // axes
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    // gridlines
+    for (let gx = Math.ceil(xmin); gx <= Math.floor(xmax); gx++) {
+      const [px] = W2P(gx, ymin);
+      ctx.beginPath();
+      ctx.moveTo(px, PAD_T);
+      ctx.lineTo(px, h - PAD_B);
+      ctx.stroke();
+    }
+    for (let gy = Math.ceil(ymin); gy <= Math.floor(ymax); gy++) {
+      const [, py] = W2P(xmin, gy);
+      ctx.beginPath();
+      ctx.moveTo(PAD_L, py);
+      ctx.lineTo(w - PAD_R, py);
+      ctx.stroke();
+    }
+    // x and y axis (zero)
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.lineWidth = 1;
+    {
+      const [, py0] = W2P(0, 0);
+      ctx.beginPath(); ctx.moveTo(PAD_L, py0); ctx.lineTo(w - PAD_R, py0); ctx.stroke();
+    }
+    {
+      const [px0] = W2P(0, 0);
+      ctx.beginPath(); ctx.moveTo(px0, PAD_T); ctx.lineTo(px0, h - PAD_B); ctx.stroke();
+    }
+    // δ markers (vertical lines at +δ and -δ)
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.setLineDash([3, 4]);
+    [d, -d].forEach(x => {
+      const [px] = W2P(x, ymin);
+      ctx.beginPath();
+      ctx.moveTo(px, PAD_T);
+      ctx.lineTo(px, h - PAD_B);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    // tick labels
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    for (let gx = Math.ceil(xmin); gx <= Math.floor(xmax); gx++) {
+      const [px] = W2P(gx, ymin);
+      ctx.fillText(String(gx), px, h - 6);
+    }
+    ctx.textAlign = 'right';
+    for (let gy = Math.ceil(ymin); gy <= Math.floor(ymax); gy++) {
+      const [, py] = W2P(xmin, gy);
+      ctx.fillText(String(gy), PAD_L - 4, py + 4);
+    }
+    ctx.textAlign = 'left';
+    // axis label x
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 11px Charter, Georgia, serif';
+    ctx.fillText('r', w - PAD_R - 8, h - PAD_B - 4);
+    // delta label
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 11px Charter, Georgia, serif';
+    {
+      const [px] = W2P(d, 0);
+      ctx.fillText('δ', px + 3, PAD_T + 12);
+    }
+
+    // curves
+    const N = 401;
+    fns.forEach(({ fn, color, width = 2 }) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      for (let i = 0; i < N; i++) {
+        const x = xmin + (xmax - xmin) * (i / (N - 1));
+        const y = fn(x);
+        const [px, py] = W2P(x, Math.max(ymin, Math.min(ymax, y)));
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    });
+  }
+
+  function update() {
+    const d = parseFloat(dEl.value);
+    dV.textContent = d.toFixed(2);
+
+    const xmin = -4, xmax = 4;
+    const [cw, ch] = fitCanvas(costC);
+    plot(cctx, cw, ch, [
+      { fn: r => L2(r),         color: '#888',    width: 1.4 },
+      { fn: r => Huber(r, d),   color: '#d18a3a', width: 2.2 },
+      { fn: r => Cauchy(r, d),  color: '#7e57c2', width: 2.2 },
+    ], 0, 6, xmin, xmax, d);
+
+    const [iw, ih] = fitCanvas(infC);
+    plot(ictx, iw, ih, [
+      { fn: r => L2psi(r),         color: '#888',    width: 1.4 },
+      { fn: r => Huberpsi(r, d),   color: '#d18a3a', width: 2.2 },
+      { fn: r => Cauchypsi(r, d),  color: '#7e57c2', width: 2.2 },
+    ], -3, 3, xmin, xmax, d);
+  }
+
+  dEl.addEventListener('input', update);
+  window.addEventListener('resize', update);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', update);
+  update();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

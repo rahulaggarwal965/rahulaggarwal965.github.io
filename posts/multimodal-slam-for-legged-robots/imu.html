@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What an IMU measures</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 110px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button.active { color: var(--link); border-color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>speed <input id="speed" type="range" min="0.4" max="2.4" step="0.05" value="1.0"><span class="val" id="speedV">1.00</span></label>
+  <button id="pause">pause</button>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">An IMU reports two things in its own (body) frame: linear acceleration (red arrow) and angular velocity (blue arc). On the figure-eight here, acceleration points toward the inside of each curve and changes direction sharply at the crossing; the angular velocity flips sign as the curvature does. Below, the three signals you'd actually log: forward acceleration a<sub>x</sub>, lateral acceleration a<sub>y</sub>, and yaw rate ω<sub>z</sub>. Pure integration of these would recover the trajectory exactly — which is why the IMU is so useful in short windows. It's also why an integrator drifts: every spike in the trace gets weighted by the timestep twice over.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const speedEl = document.getElementById('speed');
+  const speedV  = document.getElementById('speedV');
+  const pauseBtn = document.getElementById('pause');
+
+  let paused = false;
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'play' : 'pause';
+    pauseBtn.classList.toggle('active', paused);
+  });
+
+  // figure-8 (lemniscate of Gerono) parameterization
+  function pose(t) {
+    const a = 1.6;
+    const x = a * Math.sin(t);
+    const y = a * Math.sin(t) * Math.cos(t);
+    return [x, y];
+  }
+  // numerical derivatives
+  function velocity(t) {
+    const dt = 0.001;
+    const [x1, y1] = pose(t - dt);
+    const [x2, y2] = pose(t + dt);
+    return [(x2 - x1) / (2*dt), (y2 - y1) / (2*dt)];
+  }
+  function accelWorld(t) {
+    const dt = 0.002;
+    const [vx1, vy1] = velocity(t - dt);
+    const [vx2, vy2] = velocity(t + dt);
+    return [(vx2 - vx1) / (2*dt), (vy2 - vy1) / (2*dt)];
+  }
+  function orientation(t) {
+    const [vx, vy] = velocity(t);
+    return Math.atan2(vy, vx);
+  }
+  function gyro(t) {
+    const dt = 0.002;
+    let o1 = orientation(t - dt);
+    let o2 = orientation(t + dt);
+    let d = o2 - o1;
+    while (d >  Math.PI) d -= 2*Math.PI;
+    while (d < -Math.PI) d += 2*Math.PI;
+    return d / (2*dt);
+  }
+  function imuMeas(t) {
+    const [axw, ayw] = accelWorld(t);
+    const th = orientation(t);
+    const c = Math.cos(th), s = Math.sin(th);
+    return {
+      ax: c * axw + s * ayw,    // forward (body x)
+      ay: -s * axw + c * ayw,   // left (body y)
+      gz: gyro(t),
+    };
+  }
+
+  // history buffers for strip charts
+  const HIST_SECONDS = 4.0;
+  const HIST_DT = 0.02;
+  const HIST_LEN = Math.ceil(HIST_SECONDS / HIST_DT);
+  const buffers = { ax: [], ay: [], gz: [] };
+
+  let t = 0;
+  let lastReal = performance.now();
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function draw() {
+    const [w, h] = fitCanvas();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // Layout: top half = robot view, bottom = three strip charts
+    const topH = Math.round(h * 0.55);
+    const botH = h - topH;
+
+    // ---- Top: robot view ----
+    drawRobotView(0, 0, w, topH);
+
+    // ---- Bottom: 3 strip charts stacked ----
+    const chartH = (botH - 12) / 3;
+    drawChart(0, topH + 4 + chartH * 0,        w, chartH, buffers.ax,  'a_x  (forward)',  '#d18a3a', [-3, 3]);
+    drawChart(0, topH + 4 + chartH * 1 + 2,    w, chartH, buffers.ay,  'a_y  (lateral)',  '#d18a3a', [-3, 3]);
+    drawChart(0, topH + 4 + chartH * 2 + 4,    w, chartH, buffers.gz,  'ω_z  (yaw rate)', '#7e57c2', [-3, 3]);
+  }
+
+  function drawRobotView(ox, oy, w, h) {
+    // world bounds
+    const xmin = -2.4, xmax = 2.4, ymin = -1.2, ymax = 1.2;
+    const PAD = 14;
+    const sx = (w - 2*PAD) / (xmax - xmin);
+    const sy = (h - 2*PAD) / (ymax - ymin);
+    const s = Math.min(sx, sy);
+    const cxp = ox + (w - s * (xmax + xmin)) / 2;
+    const cyp = oy + (h + s * (ymax + ymin)) / 2;
+    function W2P(x, y) { return [cxp + x * s, cyp - y * s]; }
+
+    // figure-8 path (faded)
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    const M = 200;
+    for (let i = 0; i <= M; i++) {
+      const tt = (i / M) * 2 * Math.PI;
+      const [x, y] = pose(tt);
+      const [px, py] = W2P(x, y);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // current pose
+    const [rx, ry] = pose(t);
+    const th = orientation(t);
+    const meas = imuMeas(t);
+    const [rxp, ryp] = W2P(rx, ry);
+
+    // body-frame accel arrow (red/orange)
+    {
+      const c = Math.cos(th), si = Math.sin(th);
+      // body axes in world: x = (c, si), y = (-si, c)
+      const wax = c * meas.ax + (-si) * meas.ay;
+      const way = si * meas.ax + ( c) * meas.ay;
+      const scaleA = 0.18; // visual scale
+      const tipX = rx + wax * scaleA;
+      const tipY = ry + way * scaleA;
+      const [pxA, pyA] = W2P(tipX, tipY);
+      ctx.save();
+      ctx.strokeStyle = '#d18a3a';
+      ctx.fillStyle = '#d18a3a';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(rxp, ryp);
+      ctx.lineTo(pxA, pyA);
+      ctx.stroke();
+      const ang = Math.atan2(pyA - ryp, pxA - rxp);
+      const al = 8;
+      ctx.beginPath();
+      ctx.moveTo(pxA, pyA);
+      ctx.lineTo(pxA - al * Math.cos(ang - 0.4), pyA - al * Math.sin(ang - 0.4));
+      ctx.lineTo(pxA - al * Math.cos(ang + 0.4), pyA - al * Math.sin(ang + 0.4));
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = 'italic 11px Charter, Georgia, serif';
+      ctx.fillText('a', pxA + 4, pyA - 4);
+      ctx.restore();
+    }
+
+    // gyro arc (blue) above the robot — magnitude proportional to |ω_z|
+    {
+      const radius = 18;
+      const sweep = Math.max(-Math.PI * 0.95, Math.min(Math.PI * 0.95, meas.gz * 0.7));
+      ctx.save();
+      ctx.strokeStyle = '#7e57c2';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const start = -Math.PI / 2 - sweep / 2;
+      const end   = -Math.PI / 2 + sweep / 2;
+      ctx.arc(rxp, ryp, radius, Math.min(start, end), Math.max(start, end), false);
+      ctx.stroke();
+      // arrowhead at the tip indicating direction
+      const tipAng = sweep >= 0 ? end : start;
+      const tipX = rxp + radius * Math.cos(tipAng);
+      const tipY = ryp + radius * Math.sin(tipAng);
+      const tang = tipAng + (sweep >= 0 ? Math.PI/2 : -Math.PI/2);
+      ctx.fillStyle = '#7e57c2';
+      const al = 7;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX - al * Math.cos(tang - 0.5), tipY - al * Math.sin(tang - 0.5));
+      ctx.lineTo(tipX - al * Math.cos(tang + 0.5), tipY - al * Math.sin(tang + 0.5));
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = 'italic 11px Charter, Georgia, serif';
+      ctx.fillText('ω', rxp + radius + 4, ryp - radius - 2);
+      ctx.restore();
+    }
+
+    // robot body (triangle)
+    ctx.save();
+    ctx.translate(rxp, ryp);
+    ctx.rotate(-th);
+    ctx.fillStyle = cssVar('--fg');
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-5, 5);
+    ctx.lineTo(-3, 0);
+    ctx.lineTo(-5, -5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // body-frame axis labels (small)
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 10px Charter, Georgia, serif';
+    ctx.fillText('body x →', rxp + 14, ryp - 14);
+  }
+
+  function drawChart(ox, oy, w, h, hist, label, color, yrange) {
+    const PAD_L = 70, PAD_R = 8, PAD_T = 4, PAD_B = 4;
+    const cw = w - PAD_L - PAD_R;
+    const ch = h - PAD_T - PAD_B;
+    const x0 = ox + PAD_L, y0 = oy + PAD_T;
+
+    // box
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0, y0, cw, ch);
+
+    // baseline (zero)
+    const [ymin, ymax] = yrange;
+    function valToY(v) { return y0 + (1 - (v - ymin) / (ymax - ymin)) * ch; }
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.beginPath();
+    ctx.moveTo(x0, valToY(0));
+    ctx.lineTo(x0 + cw, valToY(0));
+    ctx.stroke();
+
+    // label and current value
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = 'italic 11px Charter, Georgia, serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x0 - 8, y0 + ch / 2);
+
+    // trace
+    if (hist.length > 1) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < hist.length; i++) {
+        const px = x0 + (i / (HIST_LEN - 1)) * cw;
+        const py = valToY(Math.max(ymin, Math.min(ymax, hist[i])));
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  }
+
+  function step(dtReal) {
+    const speed = parseFloat(speedEl.value);
+    speedV.textContent = speed.toFixed(2);
+    if (!paused) t += dtReal * speed;
+
+    const m = imuMeas(t);
+    buffers.ax.push(m.ax);
+    buffers.ay.push(m.ay);
+    buffers.gz.push(m.gz);
+    while (buffers.ax.length > HIST_LEN) buffers.ax.shift();
+    while (buffers.ay.length > HIST_LEN) buffers.ay.shift();
+    while (buffers.gz.length > HIST_LEN) buffers.gz.shift();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.06, (now - lastReal) / 1000);
+    lastReal = now;
+    step(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  // prime the buffers a little so the chart isn't empty on first frame
+  for (let i = 0; i < HIST_LEN; i++) {
+    const m = imuMeas(0);
+    buffers.ax.push(m.ax); buffers.ay.push(m.ay); buffers.gz.push(m.gz);
+  }
+  requestAnimationFrame(frame);
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

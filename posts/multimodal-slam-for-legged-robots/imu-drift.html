@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMU dead-reckoning drift</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 110px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3.6em; color: var(--fg); font-size: 12px; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .legend { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .swatch { width: 14px; height: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>accel noise σ<sub>a</sub> <input id="sa" type="range" min="0" max="0.30" step="0.005" value="0.05"><span class="val" id="saV">0.050</span></label>
+  <label>gyro noise σ<sub>g</sub> <input id="sg" type="range" min="0" max="0.10" step="0.002" value="0.015"><span class="val" id="sgV">0.015</span></label>
+  <label>accel bias b<sub>a</sub> <input id="ba" type="range" min="-0.10" max="0.10" step="0.005" value="0.02"><span class="val" id="baV">+0.020</span></label>
+  <button id="reset">Reset</button>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">Ground-truth trajectory (a 1 m circle traversed at 1 rad/s) versus the trajectory recovered by integrating noisy IMU measurements alone. The integrator is correct in expectation, but accelerometer error integrates twice into position and gyro error feeds into orientation, which then rotates the integrated acceleration. The drift compounds. <span class="legend"><span class="swatch" style="background:var(--muted)"></span> ground truth</span> &nbsp; <span class="legend"><span class="swatch" style="background:var(--link)"></span> IMU dead reckoning</span></p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const saEl = document.getElementById('sa');
+  const sgEl = document.getElementById('sg');
+  const baEl = document.getElementById('ba');
+  const saV = document.getElementById('saV');
+  const sgV = document.getElementById('sgV');
+  const baV = document.getElementById('baV');
+  const resetBtn = document.getElementById('reset');
+
+  function randn() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+
+  // Ground truth: circle of radius R at angular velocity Ω, starting at (R, 0) moving up
+  const R = 1.0;
+  const OMEGA = 1.0; // rad/s
+  // body frame: x forward, y left.
+  // For circular motion CCW around origin, body forward points tangent (CCW), centripetal acceleration is +y body frame (toward center).
+  // a_body_x = 0, a_body_y = R * OMEGA^2
+
+  let t = 0;
+  const dt = 0.02;
+
+  // estimated state (IMU-integrated)
+  let est;
+  // ground truth state
+  let truth;
+  let trailTrue, trailEst;
+
+  function resetState() {
+    t = 0;
+    truth = { x: R, y: 0, theta: Math.PI / 2, vx: 0, vy: R * OMEGA };
+    est   = { x: R, y: 0, theta: Math.PI / 2, vx: 0, vy: R * OMEGA };
+    trailTrue = [];
+    trailEst = [];
+  }
+  resetState();
+  resetBtn.addEventListener('click', resetState);
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function step() {
+    const sa = parseFloat(saEl.value);
+    const sg = parseFloat(sgEl.value);
+    const ba = parseFloat(baEl.value);
+    saV.textContent = sa.toFixed(3);
+    sgV.textContent = sg.toFixed(3);
+    baV.textContent = (ba >= 0 ? '+' : '') + ba.toFixed(3);
+
+    // truth update (analytic)
+    const ang = OMEGA * t;
+    truth.x = R * Math.cos(ang);
+    truth.y = R * Math.sin(ang);
+    truth.theta = ang + Math.PI / 2;
+
+    // simulate IMU measurements: gyro + accelerometer in body frame
+    // truth gyro: OMEGA, truth body accel: (0, R*OMEGA^2) (centripetal toward +y body)
+    const gyro_meas = OMEGA + sg * randn();
+    const ax_meas = 0  + sa * randn() + ba;
+    const ay_meas = R * OMEGA * OMEGA + sa * randn();
+
+    // integrate orientation (Euler)
+    est.theta += gyro_meas * dt;
+    // rotate body-frame acceleration to world
+    const c = Math.cos(est.theta), s = Math.sin(est.theta);
+    // body x is "forward". When theta = pi/2, body x points in +y world.
+    // world a = R(theta) * a_body, where R(theta) maps body x to world (cos theta, sin theta)
+    const ax_w = c * ax_meas - s * ay_meas;
+    const ay_w = s * ax_meas + c * ay_meas;
+    est.vx += ax_w * dt;
+    est.vy += ay_w * dt;
+    est.x  += est.vx * dt;
+    est.y  += est.vy * dt;
+
+    trailTrue.push([truth.x, truth.y]);
+    trailEst.push([est.x, est.y]);
+    if (trailTrue.length > 4000) { trailTrue.shift(); trailEst.shift(); }
+    t += dt;
+  }
+
+  function draw() {
+    const [w, h] = fitCanvas();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // dynamic bounds based on est trail extent
+    let xmin = -1.4, xmax = 1.4, ymin = -1.4, ymax = 1.4;
+    for (const p of trailEst) {
+      if (p[0] < xmin) xmin = p[0];
+      if (p[0] > xmax) xmax = p[0];
+      if (p[1] < ymin) ymin = p[1];
+      if (p[1] > ymax) ymax = p[1];
+    }
+    // pad
+    const padX = (xmax - xmin) * 0.10 + 0.2;
+    const padY = (ymax - ymin) * 0.10 + 0.2;
+    xmin -= padX; xmax += padX; ymin -= padY; ymax += padY;
+    // square aspect
+    const PAD = 16;
+    const sx = (w - 2*PAD) / (xmax - xmin);
+    const sy = (h - 2*PAD) / (ymax - ymin);
+    const s = Math.min(sx, sy);
+    const cxp = (w - s * (xmax + xmin)) / 2;
+    const cyp = (h + s * (ymax + ymin)) / 2;
+    function W2P(p) { return [cxp + p[0] * s, cyp - p[1] * s]; }
+
+    // grid
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    const gx0 = Math.floor(xmin), gx1 = Math.ceil(xmax);
+    const gy0 = Math.floor(ymin), gy1 = Math.ceil(ymax);
+    for (let i = gx0; i <= gx1; i++) {
+      const [x0, y0] = W2P([i, ymin]);
+      const [x1, y1] = W2P([i, ymax]);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    }
+    for (let i = gy0; i <= gy1; i++) {
+      const [x0, y0] = W2P([xmin, i]);
+      const [x1, y1] = W2P([xmax, i]);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    }
+
+    // ground-truth trail
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < trailTrue.length; i++) {
+      const [px, py] = W2P(trailTrue[i]);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // estimated trail
+    ctx.strokeStyle = cssVar('--link');
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < trailEst.length; i++) {
+      const [px, py] = W2P(trailEst[i]);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // current poses
+    function bot(state, color, fillStyle) {
+      const [px, py] = W2P([state.x, state.y]);
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(-state.theta);
+      ctx.fillStyle = fillStyle;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(8, 0);
+      ctx.lineTo(-5, 5);
+      ctx.lineTo(-3, 0);
+      ctx.lineTo(-5, -5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    bot(truth, cssVar('--muted'), cssVar('--bg'));
+    bot(est, cssVar('--link'), cssVar('--link'));
+
+    // time/error readout
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = '13px ui-monospace, Menlo, monospace';
+    const dx = est.x - truth.x, dy = est.y - truth.y;
+    const err = Math.hypot(dx, dy);
+    ctx.fillText(`t = ${t.toFixed(1)} s   ‖p_est − p_true‖ = ${err.toFixed(2)} m`, 12, 20);
+  }
+
+  function frame() {
+    step();
+    draw();
+    requestAnimationFrame(frame);
+  }
+  frame();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

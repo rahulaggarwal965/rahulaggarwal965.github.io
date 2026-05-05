@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System diagram</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button.active { color: var(--link); border-color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="flow" class="active">animate flow</button>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">The ROS-flavoured architecture, with topic names on the wires and the TF tree drawn out at the bottom. Each sensor lives in its own process; a front-end stage condenses raw measurements into a single factor with a covariance, and the factor graph back-end (iSAM2) consumes them as they arrive. Most front-ends are <em>loosely coupled</em> — they hand a relative-pose estimate to the optimizer and nothing else; only joint kinematics enters the residual directly. The IMU pulls double duty: it produces a preintegration factor like everyone else, <em>and</em> its 200 Hz pose feeds the lidar front-end so each scan's points can be motion-compensated (the dashed orange "deskew" link), <em>and</em> it publishes the high-rate <code>odom → base</code> transform on the TF tree.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const flowBtn = document.getElementById('flow');
+  let animateFlow = true;
+  flowBtn.addEventListener('click', () => {
+    animateFlow = !animateFlow;
+    flowBtn.classList.toggle('active', animateFlow);
+  });
+
+  const COL = {
+    imu:   '#d18a3a',
+    lidar: '#7e57c2',
+    cam:   '#b04545',
+    fk:    '#5fa15f',
+  };
+
+  // Order: Lidar and IMU stacked at the bottom so the deskew arrow only crosses
+  // the small gap between them; IMU is bottommost so its TF side-channel can drop
+  // straight down to the TF tree without crossing any other row.
+  const ROWS = [
+    { sensor: 'RGB-D camera\n30 Hz',         topic: '/cam/rgb',      frontend: 'ResNet + GICP verify',                                  factor: 'Loop-closure factor', color: COL.cam,   tight: false, dashed: true },
+    { sensor: 'RGB-D camera\n(same)',        topic: '/cam/depth',    frontend: 'Segment + back-project',                                factor: 'Semantic factor',     color: COL.cam,   tight: false },
+    { sensor: 'Joint encoders\n+ contact',   topic: '/joint_states', frontend: 'FK + debounce',                                         factor: 'FK & rigid-contact',  color: COL.fk,    tight: true  },
+    { sensor: 'Lidar\n10 Hz',                topic: '/points',       frontend: 'GICP registration',      frontendSub: 'IMU-deskewed', factor: 'Lidar factor',         color: COL.lidar, tight: false, isLidar: true },
+    { sensor: 'IMU\n200 Hz',                 topic: '/imu/data',     frontend: 'Preintegration',                                        factor: 'IMU factor',          color: COL.imu,   tight: false, isImu: true },
+  ];
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function roundedRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawBox(x, y, w, h, color, label, opts = {}) {
+    ctx.save();
+    ctx.fillStyle = cssVar('--bg');
+    ctx.strokeStyle = color || cssVar('--fg');
+    ctx.lineWidth = opts.thick ? 2 : 1.5;
+    if (opts.dashed) ctx.setLineDash([5, 4]);
+    roundedRect(x, y, w, h, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = (opts.bold ? '600 ' : '') + (opts.fontSize || 11) + 'px Charter, Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const lines = label.split('\n');
+    const lh = (opts.fontSize || 11) * 1.2;
+    const totalH = lines.length * lh + (opts.subLabel ? lh * 0.85 : 0);
+    let yCursor = y + h/2 - totalH/2 + lh/2;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], x + w/2, yCursor);
+      yCursor += lh;
+    }
+    if (opts.subLabel) {
+      ctx.font = 'italic 9.5px Charter, Georgia, serif';
+      ctx.fillStyle = cssVar('--muted');
+      ctx.fillText(opts.subLabel, x + w/2, yCursor);
+    }
+    ctx.restore();
+  }
+
+  function drawArrow(x1, y1, x2, y2, color, opts = {}) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = opts.width || 1.6;
+    if (opts.dashed) ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (opts.noHead) { ctx.restore(); return; }
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    const al = 7;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - al * Math.cos(ang - 0.35), y2 - al * Math.sin(ang - 0.35));
+    ctx.lineTo(x2 - al * Math.cos(ang + 0.35), y2 - al * Math.sin(ang + 0.35));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawLabel(x, y, text, color, opts = {}) {
+    ctx.save();
+    ctx.fillStyle = color || cssVar('--muted');
+    ctx.font = (opts.italic ? 'italic ' : '') + (opts.weight ? opts.weight + ' ' : '') + (opts.fontSize || 11) + 'px ' + (opts.font || 'Charter, Georgia, serif');
+    ctx.textAlign = opts.align || 'center';
+    ctx.textBaseline = opts.baseline || 'middle';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  function draw(t) {
+    const [w, h] = fitCanvas();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // ---- Layout ----
+    // tighter top, more horizontal room for topic labels.
+    const PAD_TOP = 30;
+    const tfTreeH = 100;
+    const PAD_BOT = tfTreeH + 6;
+    // Column widths
+    const sensorW = Math.max(96, w * 0.135);
+    const frontW  = Math.max(132, w * 0.20);
+    const optW    = Math.max(108, w * 0.145);
+    const sensorX = 6;
+    // Wider gap between sensor and front-end so topic names have room
+    const gap1    = Math.max(96, w * 0.13);
+    const frontX  = sensorX + sensorW + gap1;
+    const factorX = frontX + frontW;
+    const optX    = w - optW - 6;
+
+    const rowH    = 46;
+    const rowGap  = 5;
+    // Extra gap between the Lidar row and the IMU row so the deskew arrow has clear room.
+    const deskewGap = 18;
+    function rowYTop(i) {
+      let y = PAD_TOP + 4;
+      for (let k = 0; k < i; k++) {
+        const isDeskewBoundary = ROWS[k].isLidar || ROWS[k + 1] && ROWS[k + 1].isLidar;
+        const gap = (ROWS[k].isLidar && ROWS[k + 1] && ROWS[k + 1].isImu) ? deskewGap : rowGap;
+        y += rowH + gap;
+      }
+      return y;
+    }
+    const startY  = PAD_TOP + 4;
+    const endY    = rowYTop(ROWS.length - 1) + rowH;
+    const totalH  = endY - startY;
+
+    // ---- Section headers ----
+    drawLabel(sensorX + sensorW/2, 14, 'sensors', cssVar('--muted'), { fontSize: 11 });
+    drawLabel((sensorX + sensorW + frontX) / 2, 14, 'topics', cssVar('--muted'), { fontSize: 11, italic: true });
+    drawLabel(frontX + frontW/2, 14, 'front-end (per-process)', cssVar('--muted'), { fontSize: 11 });
+    drawLabel((factorX + optX) / 2, 14, 'factors', cssVar('--muted'), { fontSize: 11 });
+    drawLabel(optX + optW/2, 14, 'back-end', cssVar('--muted'), { fontSize: 11 });
+
+    // ---- Optimizer big box covers all rows ----
+    drawBox(optX, startY, optW, totalH, cssVar('--fg'), 'iSAM2\nfactor-graph\nback-end', { thick: true, bold: true, fontSize: 12 });
+
+    // ---- Pipeline rows ----
+    for (let i = 0; i < ROWS.length; i++) {
+      const row = ROWS[i];
+      const y = rowYTop(i);
+      const yMid = y + rowH/2;
+
+      drawBox(sensorX, y, sensorW, rowH, row.color, row.sensor, { fontSize: 11 });
+
+      // Topic name above the wire — clearly between the boxes, with room
+      const wireMidX = (sensorX + sensorW + frontX) / 2;
+      drawLabel(wireMidX, yMid - 9, row.topic, cssVar('--muted'), { fontSize: 10, italic: true, font: 'ui-monospace, Menlo, monospace' });
+      drawArrow(sensorX + sensorW + 2, yMid, frontX - 2, yMid, row.color);
+
+      drawBox(frontX, y, frontW, rowH, row.color, row.frontend, { fontSize: 11, dashed: row.dashed, subLabel: row.frontendSub });
+
+      drawArrow(frontX + frontW + 2, yMid, optX - 2, yMid, row.color, { dashed: row.dashed });
+      const factorMidX = (factorX + optX) / 2;
+      drawLabel(factorMidX, yMid - 8, row.factor, row.color, { fontSize: 10, italic: true });
+      drawLabel(factorMidX, yMid + 8, row.tight ? 'tight' : 'loose', cssVar('--muted'), { fontSize: 10 });
+    }
+
+    // ---- IMU → Lidar deskew side-channel ----
+    // Lidar and IMU are now adjacent rows. The deskew arrow is a short upward
+    // arrow sitting in the extra gap between them, so it never crosses any
+    // unrelated row.
+    {
+      const imuRowIdx   = ROWS.findIndex(r => r.isImu);
+      const lidarRowIdx = ROWS.findIndex(r => r.isLidar);
+      const imuY   = rowYTop(imuRowIdx);
+      const lidarY = rowYTop(lidarRowIdx);
+      // Vertical arrow between the two boxes, in the extra gap.
+      const arrowX = frontX + frontW * 0.30;  // off-center so it doesn't share the box label x
+      const fromY = imuY - 2;                 // top edge of IMU front-end (arrow tail)
+      const toY   = lidarY + rowH + 2;        // bottom edge of Lidar front-end... wait this is below.
+      // Actually we want the arrow to GO UP from IMU to Lidar, so:
+      //   from = bottom of Lidar (the arrow sits below Lidar, in the gap)
+      //   to   = top of IMU
+      // We're routing in the gap region between Lidar (above) and IMU (below).
+      const tail = imuY - 2;
+      const head = lidarY + rowH + 2;
+      ctx.save();
+      ctx.strokeStyle = COL.imu;
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(arrowX, tail);
+      ctx.lineTo(arrowX, head);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // arrowhead pointing UP into the lidar box
+      ctx.fillStyle = COL.imu;
+      ctx.beginPath();
+      ctx.moveTo(arrowX, head);
+      ctx.lineTo(arrowX - 4, head + 6);
+      ctx.lineTo(arrowX + 4, head + 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      // deskew label next to the arrow
+      drawLabel(arrowX + 7, (tail + head) / 2, 'deskew', COL.imu, { fontSize: 10, italic: true, align: 'left' });
+    }
+
+    // ---- TF tree at bottom ----
+    // Give the back-end → map-edge wire and the IMU → odom-edge wire room to breathe.
+    const tfTopY = endY + 50;
+    drawLabel(sensorX, tfTopY - 16, 'TF tree', cssVar('--muted'), { fontSize: 11, align: 'left' });
+
+    // Compute node positions: spread map / odom / base across most of the canvas width
+    const tfMargin = 24;
+    const tfMinX = sensorX + 30;
+    const tfMaxX = w - tfMargin;
+    const mapX  = tfMinX + 30;
+    const baseX = tfMaxX - 30;
+    const odomX = (mapX + baseX) / 2;
+    const tfNodeY = tfTopY + 22;
+    const tfNodeR = 18;
+
+    function tfNode(x, y, label) {
+      ctx.save();
+      ctx.fillStyle = cssVar('--bg');
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(x, y, tfNodeR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = cssVar('--fg');
+      ctx.font = '11px ui-monospace, Menlo, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x, y);
+      ctx.restore();
+    }
+    tfNode(mapX, tfNodeY, 'map');
+    tfNode(odomX, tfNodeY, 'odom');
+    tfNode(baseX, tfNodeY, 'base');
+
+    // Edges + labels — labels above edges, two lines, plenty of separation
+    drawArrow(mapX + tfNodeR + 2, tfNodeY, odomX - tfNodeR - 2, tfNodeY, cssVar('--fg'));
+    drawArrow(odomX + tfNodeR + 2, tfNodeY, baseX - tfNodeR - 2, tfNodeY, COL.imu);
+
+    // Edge 1 labels (above): two lines, both centered on edge midpoint
+    const m1x = (mapX + odomX) / 2;
+    drawLabel(m1x, tfNodeY - 24, 'iSAM2 publishes', cssVar('--fg'), { fontSize: 10, italic: true });
+    drawLabel(m1x, tfNodeY - 12, '~5 Hz · low-rate, corrected', cssVar('--muted'), { fontSize: 10 });
+
+    // Edge 2 labels (above): same shape
+    const m2x = (odomX + baseX) / 2;
+    drawLabel(m2x, tfNodeY - 24, 'IMU publishes', COL.imu, { fontSize: 10, italic: true });
+    drawLabel(m2x, tfNodeY - 12, '200 Hz · high-rate, drifty', cssVar('--muted'), { fontSize: 10 });
+
+    // Wire from back-end → "map → odom" edge. Horizontal traversal sits halfway
+    // between back-end bottom and edge-label top.
+    {
+      const fromX = optX + optW / 2;
+      const fromY = endY + 2;
+      const toX = m1x;
+      const toY = tfNodeY - 30;
+      const horY = endY + 18;
+      ctx.save();
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(fromX, horY);
+      ctx.lineTo(toX, horY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+      ctx.fillStyle = cssVar('--fg');
+      ctx.beginPath();
+      ctx.moveTo(toX, toY + 4);
+      ctx.lineTo(toX - 4, toY - 2);
+      ctx.lineTo(toX + 4, toY - 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Wire from IMU front-end (Preintegration) → "odom → base" edge.
+    // Routed at a different horizontal level than the back-end wire so that the two
+    // don't sit on top of each other when they cross.
+    {
+      const imuRowIdx = ROWS.findIndex(r => r.isImu);
+      const fromX = frontX + frontW / 2;
+      const fromY = rowYTop(imuRowIdx) + rowH + 2;
+      const toX = m2x;
+      const toY = tfNodeY - 30;
+      const horY = endY + 32;
+      ctx.save();
+      ctx.strokeStyle = COL.imu;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(fromX, horY);
+      ctx.lineTo(toX, horY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = COL.imu;
+      ctx.beginPath();
+      ctx.moveTo(toX, toY + 4);
+      ctx.lineTo(toX - 4, toY - 2);
+      ctx.lineTo(toX + 4, toY - 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // back-end's "map + trajectory" annotation. Placed in the factor channel below
+    // the bottom row so it doesn't fight the back-end → TF wire.
+    {
+      const factorMidX = (factorX + optX) / 2;
+      drawLabel(factorMidX, endY + 8, 'map + trajectory', cssVar('--fg'), { fontSize: 10, italic: true });
+    }
+
+    // ---- Animated dots ----
+    if (animateFlow) {
+      const period = 1.4;
+      const phase = ((t / 1000) % period) / period;
+      for (let i = 0; i < ROWS.length; i++) {
+        const row = ROWS[i];
+        const y = rowYTop(i) + rowH/2;
+        const x1 = sensorX + sensorW + (frontX - sensorX - sensorW) * phase;
+        const x2 = frontX + frontW + (optX - frontX - frontW) * phase;
+        ctx.fillStyle = row.color;
+        ctx.beginPath(); ctx.arc(x1, y, 2.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(x2, y, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  function frame(t) {
+    draw(t);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

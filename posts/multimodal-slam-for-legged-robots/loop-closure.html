@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loop closure: loose coupling</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button.active { color: var(--link); border-color: var(--link); }
+  .controls .stage-label { color: var(--fg); font-variant-numeric: tabular-nums; }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="prev">◀ prev</button>
+  <button id="next">next ▶</button>
+  <span class="stage-label" id="stageLabel">stage 1 / 4</span>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">Loop closure as a loose-coupling pipeline. The robot's current frame triggers a fast nearest-neighbor search in a stored bank of visual features; the search returns several plausibly-similar past frames, but visual similarity is not enough — two corridors can look identical. A geometric check (GICP between the lidar scans) filters the false positives, and only the surviving relative-pose estimate is handed to the optimizer as a single factor with a tight covariance. The factor graph never sees the candidate list, the feature vectors, or the rejected scans. That separation is what <em>loose coupling</em> buys you: a complex front-end behind a simple interface.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const prevBtn = document.getElementById('prev');
+  const nextBtn = document.getElementById('next');
+  const stageLabel = document.getElementById('stageLabel');
+
+  // Trajectory: counterclockwise loop, ends near start
+  // Keyframes K0..K9, where K9 is the current pose
+  const KF = [
+    { x: -3.5, y: -2.0, label: 'K0' },     // start, bottom-left
+    { x: -1.5, y: -2.0, label: 'K1' },
+    { x:  0.8, y: -1.9, label: 'K2' },
+    { x:  3.0, y: -1.5, label: 'K3' },     // bottom-right
+    { x:  3.6, y:  0.2, label: 'K4' },
+    { x:  2.5, y:  1.7, label: 'K5' },     // top-right
+    { x:  0.5, y:  1.9, label: 'K6' },
+    { x: -1.6, y:  1.7, label: 'K7' },     // top-left, looks visually similar to K0
+    { x: -3.0, y:  0.6, label: 'K8' },
+    { x: -3.6, y: -0.3, label: 'K9 (current)' }, // back near start, but offset upward to avoid label collision
+  ];
+
+  // Latent-space "appearance distances" from K9 to each prior keyframe.
+  // Smaller = more visually similar. K0 should be a true match (loop closes there).
+  // K7 should be a false positive (similar appearance, different place).
+  const APPEAR_DIST = [0.15, 0.55, 0.85, 1.10, 0.95, 0.80, 0.60, 0.25, 0.45];
+
+  // Geometric verification: does GICP succeed between K9's scan and candidate's scan?
+  // True only when actually the same place. K0 is the true loop; K7 looks similar but isn't.
+  const GICP_PASS = [true, false, false, false, false, false, false, false, false];
+
+  // STAGES:
+  // 0: trajectory + keyframes only
+  // 1: latent-space search returns candidates (top-K highlighted)
+  // 2: geometric verification (accepts/rejects)
+  // 3: final factor added to graph (only the accepted relative pose)
+  let stage = 0;
+  const N_STAGES = 4;
+
+  function setStage(s) {
+    stage = Math.max(0, Math.min(N_STAGES - 1, s));
+    stageLabel.textContent = `stage ${stage + 1} / ${N_STAGES}`;
+    draw();
+  }
+  prevBtn.addEventListener('click', () => setStage(stage - 1));
+  nextBtn.addEventListener('click', () => setStage(stage + 1));
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function setupTransform(w, h) {
+    const xmin = -4.4, xmax = 4.2, ymin = -2.6, ymax = 2.4;
+    const PAD = 60; // leave room for legend at top
+    const sx = (w - 2*PAD) / (xmax - xmin);
+    const sy = (h - 2*PAD) / (ymax - ymin);
+    const s = Math.min(sx, sy);
+    const cxp = (w - s * (xmax + xmin)) / 2;
+    const cyp = (h + s * (ymax + ymin)) / 2;
+    return (x, y) => [cxp + x * s, cyp - y * s];
+  }
+
+  function draw() {
+    const [w, h] = fitCanvas();
+    const W2P = setupTransform(w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // trajectory polyline
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < KF.length; i++) {
+      const [px, py] = W2P(KF[i].x, KF[i].y);
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    const cur = KF[KF.length - 1];
+    const [cxp, cyp] = W2P(cur.x, cur.y);
+
+    // top-3 candidates by appearance distance (excluding K9 itself)
+    const candidates = APPEAR_DIST
+      .map((d, i) => ({ i, d }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 3);
+    const candidateSet = new Set(candidates.map(c => c.i));
+
+    // STAGE 1+: latent-space search
+    if (stage >= 1) {
+      // draw lines from current to top-K candidates, thickness ∝ similarity
+      for (const { i, d } of candidates) {
+        const kf = KF[i];
+        const [kx, ky] = W2P(kf.x, kf.y);
+        const sim = 1 - d / 1.2; // map to 0..1
+        const lw = 0.6 + sim * 3.5;
+        ctx.strokeStyle = cssVar('--link');
+        ctx.globalAlpha = 0.25 + sim * 0.55;
+        ctx.lineWidth = lw;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(cxp, cyp);
+        ctx.lineTo(kx, ky);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // STAGE 2+: geometric verification badges
+    if (stage >= 2) {
+      for (const { i } of candidates) {
+        const kf = KF[i];
+        const [kx, ky] = W2P(kf.x, kf.y);
+        const pass = GICP_PASS[i];
+        const badgeR = 11;
+        const bx = kx + 18, by = ky - 18;
+        ctx.fillStyle = cssVar('--bg');
+        ctx.strokeStyle = pass ? '#4a8a4a' : '#b04545';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(bx, by, badgeR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = pass ? '#4a8a4a' : '#b04545';
+        ctx.lineWidth = 2;
+        if (pass) {
+          ctx.beginPath();
+          ctx.moveTo(bx - 4, by);
+          ctx.lineTo(bx - 1, by + 3);
+          ctx.lineTo(bx + 5, by - 4);
+          ctx.stroke();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(bx - 4, by - 4);
+          ctx.lineTo(bx + 4, by + 4);
+          ctx.moveTo(bx + 4, by - 4);
+          ctx.lineTo(bx - 4, by + 4);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // STAGE 3: only the accepted factor remains, drawn boldly
+    if (stage >= 3) {
+      const accepted = candidates.find(c => GICP_PASS[c.i]);
+      if (accepted) {
+        const kf = KF[accepted.i];
+        const [kx, ky] = W2P(kf.x, kf.y);
+        ctx.strokeStyle = '#4a8a4a';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(cxp, cyp);
+        ctx.lineTo(kx, ky);
+        ctx.stroke();
+        // factor label midway
+        const mx = (cxp + kx) / 2, my = (cyp + ky) / 2;
+        ctx.fillStyle = '#4a8a4a';
+        ctx.fillRect(mx - 4, my - 4, 8, 8);
+        ctx.font = 'italic 11px Charter, Georgia, serif';
+        ctx.fillStyle = cssVar('--fg');
+        ctx.textAlign = 'center';
+        ctx.fillText('loop-closure factor', mx, my - 12);
+      }
+    }
+
+    // keyframe pins
+    for (let i = 0; i < KF.length; i++) {
+      const kf = KF[i];
+      const [px, py] = W2P(kf.x, kf.y);
+      const isCur = i === KF.length - 1;
+      ctx.fillStyle = cssVar('--bg');
+      ctx.strokeStyle = isCur ? cssVar('--fg') : cssVar('--muted');
+      ctx.lineWidth = isCur ? 2.5 : 1.5;
+      ctx.beginPath();
+      ctx.arc(px, py, isCur ? 9 : 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = cssVar('--fg');
+      ctx.font = (isCur ? '600 11px' : '11px') + ' Charter, Georgia, serif';
+      // K9 (current) puts its label ABOVE the dot (everyone else is below) so the long label
+      // never collides with K0's pin or label below the loop.
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(kf.label, px, py + (isCur ? -20 : 18));
+    }
+
+    // Stage description text in top-left
+    const txts = [
+      'A trajectory and its keyframes. K9 is the current frame; we want to know if any earlier frame is the same place.',
+      'Step 1 — latent-space search. The ResNet feature for K9 is compared to all stored features; the top three candidates are connected. Line thickness is appearance similarity.',
+      'Step 2 — geometric verification. GICP is run between the current lidar scan and each candidate. True positives align (✓); look-alikes don\'t (✗).',
+      'Step 3 — a single relative-pose factor is added to the graph. Everything else — the candidates, the rejected scans, the network features — never enters the optimizer. That is loose coupling.',
+    ];
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = '12px Charter, Georgia, serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    wrapText(ctx, txts[stage], 12, 12, w - 24, 16);
+  }
+
+  function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+    const words = text.split(' ');
+    let line = '';
+    let cy = y;
+    for (let n = 0; n < words.length; n++) {
+      const test = line + words[n] + ' ';
+      const m = ctx.measureText(test);
+      if (m.width > maxWidth && n > 0) {
+        ctx.fillText(line, x, cy);
+        line = words[n] + ' ';
+        cy += lineHeight;
+      } else {
+        line = test;
+      }
+    }
+    ctx.fillText(line, x, cy);
+  }
+
+  window.addEventListener('resize', draw);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  setStage(0);
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

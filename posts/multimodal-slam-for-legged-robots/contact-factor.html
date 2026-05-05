@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forward-kinematic contact factor</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+    row-gap: 6px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); flex: 1; min-width: 70px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3.4em; color: var(--fg); font-size: 12px; text-align: right; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+    grid-column: span 2; justify-self: start;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 3; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .stat { font-variant-numeric: tabular-nums; color: var(--fg); }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>α<sub>1</sub> (hip) <input id="a1" type="range" min="-1.0" max="1.0" step="0.01" value="0.25"><span class="val" id="a1V">0.25</span></label>
+  <label>α<sub>2</sub> (knee) <input id="a2" type="range" min="0.1" max="2.0" step="0.01" value="0.6"><span class="val" id="a2V">0.60</span></label>
+  <label>body x <input id="bx" type="range" min="-1.5" max="1.5" step="0.01" value="0"><span class="val" id="bxV">0.00</span></label>
+  <label>body θ <input id="bt" type="range" min="-0.5" max="0.5" step="0.01" value="0"><span class="val" id="btV">0.00</span></label>
+  <button id="plant">Plant foot at current FK position</button>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">A planar quadruped leg with two joint angles (α<sub>1</sub>, α<sub>2</sub>) and a body pose (x, θ). The forward-kinematic function f(α) gives the foot position in the body frame; the world-frame foot is R(θ)·f(α) + p. When the foot is in rigid contact, the world-frame point c is fixed. Any pose that shifts the body without re-grounding moves the predicted foot away from c — the gap is the residual r<sub>F</sub> = R·f(α) + p − c. Plant the foot, then drag the body sliders to see the constraint pull.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+
+  const a1El = document.getElementById('a1');
+  const a2El = document.getElementById('a2');
+  const bxEl = document.getElementById('bx');
+  const btEl = document.getElementById('bt');
+  const a1V = document.getElementById('a1V');
+  const a2V = document.getElementById('a2V');
+  const bxV = document.getElementById('bxV');
+  const btV = document.getElementById('btV');
+  const plantBtn = document.getElementById('plant');
+
+  // robot geometry, in meters
+  const L1 = 0.32;       // thigh
+  const L2 = 0.34;       // shin
+  const HIP_X = 0.20;    // hip offset on body (front leg)
+  const HIP_Y = -0.05;   // hip offset (slightly below body center)
+  const BODY_W = 0.65;
+  const BODY_H = 0.18;
+  const BODY_Y = 0.40;   // body center height when "standing" -- fixed for clarity
+
+  // forward kinematics in body frame: returns {hip, knee, foot}
+  function fk(a1, a2) {
+    const hip = [HIP_X, HIP_Y];
+    const knee = [hip[0] + L1 * Math.sin(a1), hip[1] - L1 * Math.cos(a1)];
+    const foot = [knee[0] + L2 * Math.sin(a1 + a2), knee[1] - L2 * Math.cos(a1 + a2)];
+    return { hip, knee, foot };
+  }
+
+  function rot(theta, p) {
+    const c = Math.cos(theta), s = Math.sin(theta);
+    return [c*p[0] - s*p[1], s*p[0] + c*p[1]];
+  }
+  function add(a, b) { return [a[0] + b[0], a[1] + b[1]]; }
+  function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
+  function len(a) { return Math.hypot(a[0], a[1]); }
+
+  // anchor (planted foot) in world frame; null until first plant
+  let anchor = null;
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    canvas.width = r.width * dpr;
+    canvas.height = r.height * dpr;
+    return [r.width, r.height];
+  }
+
+  function draw() {
+    const a1 = parseFloat(a1El.value);
+    const a2 = parseFloat(a2El.value);
+    const bx = parseFloat(bxEl.value);
+    const bt = parseFloat(btEl.value);
+    a1V.textContent = a1.toFixed(2);
+    a2V.textContent = a2.toFixed(2);
+    bxV.textContent = bx.toFixed(2);
+    btV.textContent = bt.toFixed(2);
+
+    const [w, h] = fitCanvas();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // world-to-pixel transform: world x in [-1.5, 1.5], y in [-0.1, 1.1]
+    const PAD = 30;
+    const wx_min = -1.5, wx_max = 1.5;
+    const wy_min = -0.1, wy_max = 1.1;
+    const sx = (w - 2*PAD) / (wx_max - wx_min);
+    const sy = (h - 2*PAD) / (wy_max - wy_min);
+    const s = Math.min(sx, sy);
+    const cx = w / 2;
+    const groundPx = h - PAD - (0 - wy_min) * s;
+    function W2P(p) { return [cx + p[0] * s, groundPx - p[1] * s]; }
+
+    // ground
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, groundPx);
+    ctx.lineTo(w, groundPx);
+    ctx.stroke();
+    // hatching for ground
+    ctx.save();
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.globalAlpha = 0.6;
+    for (let x = 0; x < w + 30; x += 12) {
+      ctx.beginPath();
+      ctx.moveTo(x, groundPx + 0);
+      ctx.lineTo(x - 10, groundPx + 12);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // body pose
+    const p = [bx, BODY_Y];
+    const theta = bt;
+
+    // body rectangle corners in body frame, rotated and translated
+    const cs = [
+      [-BODY_W/2, -BODY_H/2],
+      [ BODY_W/2, -BODY_H/2],
+      [ BODY_W/2,  BODY_H/2],
+      [-BODY_W/2,  BODY_H/2],
+    ].map(c => add(rot(theta, c), p));
+    ctx.fillStyle = cssVar('--code-bg');
+    ctx.strokeStyle = cssVar('--fg');
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    cs.forEach((q, i) => { const [px, py] = W2P(q); i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); });
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // body-frame trunk indicator (small line forward)
+    const nose = add(rot(theta, [BODY_W/2 + 0.06, 0]), p);
+    const tail = add(rot(theta, [-BODY_W/2 - 0.04, 0]), p);
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const [nx, ny] = W2P(nose);
+    const [tx, ty] = W2P(tail);
+    ctx.moveTo(tx, ty); ctx.lineTo(nx, ny);
+    ctx.stroke();
+
+    // forward kinematics in body frame, then transform
+    const k = fk(a1, a2);
+    const hipW  = add(rot(theta, k.hip),  p);
+    const kneeW = add(rot(theta, k.knee), p);
+    const footW = add(rot(theta, k.foot), p);
+
+    // draw leg
+    ctx.strokeStyle = cssVar('--fg');
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    let q = W2P(hipW); ctx.moveTo(q[0], q[1]);
+    q = W2P(kneeW); ctx.lineTo(q[0], q[1]);
+    q = W2P(footW); ctx.lineTo(q[0], q[1]);
+    ctx.stroke();
+
+    // joints
+    function dot(world, r, fill) {
+      const [x, y] = W2P(world);
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    dot(hipW, 4, cssVar('--fg'));
+    dot(kneeW, 4, cssVar('--fg'));
+
+    // residual + anchor
+    let residualMag = 0;
+    if (anchor !== null) {
+      // anchor marker (planted contact point)
+      const [ax, ay] = W2P(anchor);
+      ctx.strokeStyle = cssVar('--link');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ax - 8, ay - 8); ctx.lineTo(ax + 8, ay + 8);
+      ctx.moveTo(ax - 8, ay + 8); ctx.lineTo(ax + 8, ay - 8);
+      ctx.stroke();
+      ctx.font = '12px Charter, Georgia, serif';
+      ctx.fillStyle = cssVar('--link');
+      ctx.fillText('c', ax + 10, ay - 6);
+
+      // residual line: from foot (FK) to anchor c
+      const r = sub(footW, anchor);
+      residualMag = len(r);
+      const [fx, fy] = W2P(footW);
+      ctx.strokeStyle = cssVar('--link');
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy); ctx.lineTo(ax, ay);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // foot (FK-predicted) — open circle
+    {
+      const [fx, fy] = W2P(footW);
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.fillStyle = cssVar('--bg');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 5.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = cssVar('--muted');
+      ctx.font = '12px Charter, Georgia, serif';
+      ctx.fillText('R·f(α) + p', fx + 9, fy + 4);
+    }
+
+    // angle arcs at hip and knee (small visual)
+    function angleArc(centerW, baseDir, sweep, radius, label) {
+      const [cxp, cyp] = W2P(centerW);
+      // baseDir is a 2D world-frame unit vector indicating where 0 starts (in canvas px space, y is flipped)
+      const start = Math.atan2(-baseDir[1], baseDir[0]);
+      const end = start - sweep; // canvas y-flip → minus
+      ctx.strokeStyle = cssVar('--muted');
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(cxp, cyp, radius, Math.min(start, end), Math.max(start, end));
+      ctx.stroke();
+      if (label) {
+        const mid = (start + end) / 2;
+        ctx.fillStyle = cssVar('--muted');
+        ctx.font = 'italic 11px Charter, Georgia, serif';
+        ctx.fillText(label, cxp + Math.cos(mid) * (radius + 8) - 4, cyp + Math.sin(mid) * (radius + 8) + 4);
+      }
+    }
+    // baseline at hip is "down" in body frame, rotated by theta
+    const downBody = rot(theta, [0, -1]);
+    const thighDir = rot(theta, [Math.sin(a1), -Math.cos(a1)]);
+    angleArc(hipW, downBody, a1, 18, 'α₁');
+    angleArc(kneeW, thighDir, a2, 16, 'α₂');
+
+    // residual readout
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = '13px ui-monospace, Menlo, monospace';
+    const txt = anchor
+      ? `‖r_F‖ = ${residualMag.toFixed(3)} m`
+      : 'foot not planted — click Plant to anchor c';
+    ctx.fillText(txt, 12, 20);
+  }
+
+  function update() { draw(); }
+  [a1El, a2El, bxEl, btEl].forEach(el => el.addEventListener('input', update));
+  plantBtn.addEventListener('click', () => {
+    const a1 = parseFloat(a1El.value);
+    const a2 = parseFloat(a2El.value);
+    const bx = parseFloat(bxEl.value);
+    const bt = parseFloat(btEl.value);
+    const k = fk(a1, a2);
+    const footW = add(rot(bt, k.foot), [bx, BODY_Y]);
+    anchor = footW;
+    update();
+  });
+
+  window.addEventListener('resize', update);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', update);
+  update();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>
