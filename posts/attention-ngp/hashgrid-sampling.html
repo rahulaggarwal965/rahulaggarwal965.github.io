@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hash-grid sampling</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 120px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 2em; color: var(--fg); font-size: 12px; text-align: right; }
+  .controls .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+  .controls .seg button {
+    font-family: inherit; font-size: 12px; color: var(--muted);
+    background: transparent; border: 0; padding: 4px 10px; cursor: pointer;
+  }
+  .controls .seg button.on { background: var(--code-bg); color: var(--fg); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .panel { min-width: 0; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); cursor: crosshair; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="controls">
+  <span class="seg">
+    <button id="m-interp" class="on">interpolate</button>
+    <button id="m-neigh">gather neighborhood</button>
+  </span>
+  <label>K <input id="k" type="range" min="4" max="12" step="1" value="6"><span class="val" id="kV">6</span></label>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">level 1 — coarse</p>
+    <canvas id="g0"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">level 2</p>
+    <canvas id="g1"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">level 3 — fine</p>
+    <canvas id="g2"></canvas>
+  </div>
+</div>
+<p class="caption">A 2D analogue of Instant-NGP's multi-resolution feature grid. Drag the query point in any panel — it moves in all three at once. In <i>interpolate</i> mode each level draws the four corner vertices used for bilinear interpolation. In <i>gather neighborhood</i> mode each level instead returns the K nearest vertices as a sequence — the same data, restructured for a downstream attention layer to reason about. Vertex colors are a deterministic hash, a stand-in for the embeddings the network actually learns to store.</p>
+<script>
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const dpr = window.devicePixelRatio || 1;
+  const canvases = [document.getElementById('g0'), document.getElementById('g1'), document.getElementById('g2')];
+  const ctxs = canvases.map(c => c.getContext('2d'));
+  const levels = [{ n: 4 }, { n: 9 }, { n: 16 }];
+  const kEl = document.getElementById('k');
+  const kV = document.getElementById('kV');
+  const mInterp = document.getElementById('m-interp');
+  const mNeigh = document.getElementById('m-neigh');
+
+  let mode = 'interp';
+  let K = 6;
+  // query in [0,1]^2
+  let qx = 0.42, qy = 0.55;
+
+  function vertColor(level, ix, iy) {
+    // deterministic hash → hsl
+    let h = (ix * 73856093) ^ (iy * 19349663) ^ (level * 83492791);
+    h = (h >>> 0) % 360;
+    const s = 38 + (((ix * 13 + iy * 7) >>> 0) % 25);
+    const l = 56 + (((ix * 5 + iy * 11) >>> 0) % 18);
+    return `hsl(${h}, ${s}%, ${l}%)`;
+  }
+
+  function drawLevel(ctx, c, levelIdx) {
+    const W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = cssVar('--bg');
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = [0.45, 0.65, 0.85][levelIdx];
+    ctx.fillStyle = cssVar('--code-bg');
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+
+    const n = levels[levelIdx].n;
+    const stepX = W / n, stepY = H / n;
+
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= n; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * stepX + 0.5, 0);
+      ctx.lineTo(i * stepX + 0.5, H);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, i * stepY + 0.5);
+      ctx.lineTo(W, i * stepY + 0.5);
+      ctx.stroke();
+    }
+
+    // vertex positions
+    const verts = [];
+    for (let iy = 0; iy <= n; iy++) {
+      for (let ix = 0; ix <= n; ix++) {
+        const x = ix * stepX, y = iy * stepY;
+        verts.push({ ix, iy, x, y, color: vertColor(levelIdx, ix, iy) });
+      }
+    }
+
+    // draw all vertices small
+    for (const v of verts) {
+      ctx.fillStyle = v.color;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, 3 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // query in pixel coords
+    const px = qx * W, py = qy * H;
+
+    // determine which vertices to highlight
+    let highlighted;
+    if (mode === 'interp') {
+      const ix0 = Math.max(0, Math.min(n - 1, Math.floor(px / stepX)));
+      const iy0 = Math.max(0, Math.min(n - 1, Math.floor(py / stepY)));
+      highlighted = [
+        verts.find(v => v.ix === ix0   && v.iy === iy0),
+        verts.find(v => v.ix === ix0+1 && v.iy === iy0),
+        verts.find(v => v.ix === ix0+1 && v.iy === iy0+1),
+        verts.find(v => v.ix === ix0   && v.iy === iy0+1),
+      ];
+    } else {
+      const ranked = verts.map(v => ({ v, d: Math.hypot(v.x - px, v.y - py) })).sort((a,b) => a.d - b.d);
+      highlighted = ranked.slice(0, K).map(r => r.v);
+    }
+
+    // draw cell shading for interp
+    if (mode === 'interp') {
+      ctx.beginPath();
+      const h = highlighted;
+      ctx.moveTo(h[0].x, h[0].y);
+      ctx.lineTo(h[1].x, h[1].y);
+      ctx.lineTo(h[2].x, h[2].y);
+      ctx.lineTo(h[3].x, h[3].y);
+      ctx.closePath();
+      ctx.fillStyle = cssVar('--link');
+      ctx.globalAlpha = 0.10;
+      ctx.fill();
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = cssVar('--link');
+      ctx.lineWidth = 1.4 * dpr;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    // connecting lines query → highlighted
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.lineWidth = 1 * dpr;
+    for (const v of highlighted) {
+      if (!v) continue;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(v.x, v.y);
+      ctx.stroke();
+    }
+
+    // highlighted vertices larger + ring
+    for (const v of highlighted) {
+      if (!v) continue;
+      ctx.fillStyle = v.color;
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, 6.5 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.lineWidth = 1.4 * dpr;
+      ctx.stroke();
+    }
+
+    // query point
+    ctx.fillStyle = cssVar('--fg');
+    ctx.beginPath();
+    ctx.arc(px, py, 5 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = cssVar('--bg');
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.stroke();
+
+    // label in the corner
+    ctx.font = `${Math.round(11.5 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = cssVar('--muted');
+    const txt = mode === 'interp' ? '4 corners (bilinear)' : `${K} nearest vertices`;
+    ctx.fillText(txt, 8 * dpr, 8 * dpr);
+  }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+  }
+
+  function draw() {
+    canvases.forEach(c => fitCanvas(c));
+    for (let i = 0; i < canvases.length; i++) {
+      drawLevel(ctxs[i], canvases[i], i);
+    }
+  }
+
+  function setupDrag(c) {
+    let dragging = false;
+    function pick(ev) {
+      const r = c.getBoundingClientRect();
+      const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+      const cy = (ev.touches ? ev.touches[0].clientY : ev.clientY) - r.top;
+      qx = Math.max(0, Math.min(1, cx / r.width));
+      qy = Math.max(0, Math.min(1, cy / r.height));
+      draw();
+    }
+    c.addEventListener('mousedown', e => { dragging = true; pick(e); });
+    c.addEventListener('mousemove', e => { if (dragging) pick(e); });
+    window.addEventListener('mouseup', () => { dragging = false; });
+    c.addEventListener('touchstart', e => { dragging = true; pick(e); e.preventDefault(); }, { passive: false });
+    c.addEventListener('touchmove', e => { if (dragging) { pick(e); e.preventDefault(); } }, { passive: false });
+    c.addEventListener('touchend', () => { dragging = false; });
+  }
+  canvases.forEach(setupDrag);
+
+  function setMode(m) {
+    mode = m;
+    mInterp.classList.toggle('on', m === 'interp');
+    mNeigh.classList.toggle('on', m === 'neigh');
+    kEl.disabled = (m === 'interp');
+    draw();
+  }
+  mInterp.addEventListener('click', () => setMode('interp'));
+  mNeigh.addEventListener('click', () => setMode('neigh'));
+  kEl.addEventListener('input', () => {
+    K = parseInt(kEl.value, 10);
+    kV.textContent = K;
+    draw();
+  });
+  setMode('interp');
+
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  function postHeight() { parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*'); }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(() => { draw(); postHeight(); }).observe(document.body);
+</script>
+</body>
+</html>

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distillation loop</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  canvas { width: 100%; aspect-ratio: 5 / 4; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="play">Play</button>
+  <button id="step">Step</button>
+  <button id="reset">Reset</button>
+  <span id="stage" style="font-size:12px;color:var(--fg);margin-left:auto;"></span>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">The full training loop. Each posed RGB image goes through the off-the-shelf 2D model, producing per-view labels that disagree with each other. AttentioNGP fits the disagreements into a single 3D-consistent field. Re-rendering that field at the training poses gives a cleaner set of pseudo-labels. Cross-entropy fine-tuning pushes the 2D model toward those pseudo-labels — the 3D consistency leaks back into the 2D weights, no new ground truth required.</p>
+<script>
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const dpr = window.devicePixelRatio || 1;
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  const playBtn = document.getElementById('play');
+  const stepBtn = document.getElementById('step');
+  const resetBtn = document.getElementById('reset');
+  const stageOut = document.getElementById('stage');
+
+  const stages = [
+    'posed RGB images',
+    '2D segmenter',
+    'noisy per-view labels',
+    'AttentioNGP (3D field)',
+    'rendered labels',
+  ];
+  const fwdLabels = [
+    '2D forward pass',
+    'predict per pixel — flickers across views',
+    'lift: gather + attend on hash-grid neighborhood',
+    'volumetric render at training poses',
+  ];
+
+  // Six equal-time phases. Phases 0..4 = "particle is at box i, highlight box i".
+  // Phase 5 = "loopback (distillation), no box highlighted".
+  const NPHASES = 6;
+  let t = 0, playing = false, last = 0;
+  const period = 8.5;
+
+  function fitCanvas() {
+    const r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+  }
+
+  function layout() {
+    const W = c.width, H = c.height;
+    const rightGutter = Math.max(150 * dpr, W * 0.22);
+    const colCenterX = (W - rightGutter) * 0.5;
+    const boxW = Math.min(360 * dpr, (W - rightGutter) - 40 * dpr);
+    const boxH = 50 * dpr;
+    const topPad = 60 * dpr;
+    const bottomPad = 60 * dpr;
+    const n = stages.length;
+    const usableH = H - topPad - bottomPad;
+    const stride = usableH / (n - 1);
+    const boxes = stages.map((name, i) => ({
+      name, cx: colCenterX, cy: topPad + i * stride, w: boxW, h: boxH,
+    }));
+    const gutterX = Math.min(W - 22 * dpr, colCenterX + boxW/2 + 110 * dpr);
+    return { boxes, W, H, gutterX };
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+
+  function drawBox(box, active) {
+    const { cx, cy, w, h, name } = box;
+    const x0 = cx - w/2, y0 = cy - h/2;
+    if (active) {
+      ctx.fillStyle = cssVar('--link');
+      ctx.globalAlpha = 0.18;
+      roundRect(x0, y0, w, h, 8 * dpr);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = cssVar('--link');
+      ctx.lineWidth = 2.2 * dpr;
+    } else {
+      ctx.fillStyle = cssVar('--code-bg');
+      roundRect(x0, y0, w, h, 8 * dpr);
+      ctx.fill();
+      ctx.strokeStyle = cssVar('--rule');
+      ctx.lineWidth = 1.2 * dpr;
+    }
+    roundRect(x0, y0, w, h, 8 * dpr);
+    ctx.stroke();
+    ctx.fillStyle = cssVar('--fg');
+    ctx.font = `600 ${Math.round(15 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(name, cx, cy);
+  }
+
+  function drawForwardArrow(a, b, label) {
+    const x = a.cx;
+    const y0 = a.cy + a.h/2 + 4 * dpr;
+    const y1 = b.cy - b.h/2 - 4 * dpr;
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.lineWidth = 1.6 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y1);
+    ctx.stroke();
+    ctx.fillStyle = cssVar('--muted');
+    ctx.beginPath();
+    ctx.moveTo(x, y1);
+    ctx.lineTo(x - 5 * dpr, y1 - 8 * dpr);
+    ctx.lineTo(x + 5 * dpr, y1 - 8 * dpr);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = `${Math.round(12.5 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + 14 * dpr, (y0 + y1) / 2);
+  }
+
+  function drawLoopback(boxes, gutterX) {
+    const start = boxes[boxes.length - 1];
+    const end = boxes[1];
+    const sx = start.cx + start.w/2;            // out the right edge of "rendered labels"
+    const sy = start.cy;
+    const ex = end.cx + end.w/2;                // back into the RIGHT edge of "2D segmenter"
+    const ey = end.cy;
+    ctx.strokeStyle = cssVar('--link');
+    ctx.lineWidth = 2.2 * dpr;
+    ctx.setLineDash([8 * dpr, 5 * dpr]);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(gutterX - 12 * dpr, sy);
+    ctx.quadraticCurveTo(gutterX, sy, gutterX, sy - 12 * dpr);
+    ctx.lineTo(gutterX, ey + 12 * dpr);
+    ctx.quadraticCurveTo(gutterX, ey, gutterX - 12 * dpr, ey);
+    ctx.lineTo(ex + 8 * dpr, ey);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // arrowhead at right edge of segmenter, pointing LEFT into the box
+    ctx.fillStyle = cssVar('--link');
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex + 9 * dpr, ey - 5 * dpr);
+    ctx.lineTo(ex + 9 * dpr, ey + 5 * dpr);
+    ctx.closePath();
+    ctx.fill();
+    ctx.save();
+    ctx.translate(gutterX + 16 * dpr, (sy + ey) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = cssVar('--link');
+    ctx.font = `bold ${Math.round(13.5 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('distillation: cross-entropy', 0, 0);
+    ctx.font = `italic ${Math.round(12 * dpr)}px Charter, Georgia, serif`;
+    ctx.fillStyle = cssVar('--muted');
+    ctx.fillText('3D consistency leaks back into 2D weights', 0, 18 * dpr);
+    ctx.restore();
+  }
+
+  // Particle position — synced with the active phase.
+  // Phases 0..3: particle moves through box[i] from top to bottom (visiting that box).
+  // Phase 4: particle moves through box[4] from top to *center* — stops at the loopback's start.
+  // Phase 5: loopback path. Begins by exiting box[4] horizontally (its center), then up the gutter,
+  //          then back across into box[1]'s right edge.
+  function particlePos(u, boxes, gutterX) {
+    const phase = Math.min(NPHASES - 1, Math.floor(u * NPHASES));
+    const subU = u * NPHASES - phase;
+    if (phase < 4) {
+      const b = boxes[phase];
+      return {
+        x: b.cx,
+        y: (b.cy - b.h/2) + subU * b.h,
+        activeBox: phase,
+      };
+    }
+    if (phase === 4) {
+      const b = boxes[4];
+      // top → center, stop at the vertical center where the loopback arrow originates.
+      return {
+        x: b.cx,
+        y: (b.cy - b.h/2) + subU * (b.h/2),
+        activeBox: 4,
+      };
+    }
+    // Phase 5 — loopback. Path nodes (4 segments):
+    //   box[4].center → box[4].right-edge → (gutterX, box[4].cy) → (gutterX, box[1].cy) → box[1].right-edge
+    const start = boxes[4];
+    const end = boxes[1];
+    const n0 = { x: start.cx, y: start.cy };                 // we left phase 4 here
+    const n1 = { x: start.cx + start.w/2, y: start.cy };     // exit box right edge
+    const n2 = { x: gutterX, y: start.cy };                  // into the gutter
+    const n3 = { x: gutterX, y: end.cy };                    // up the gutter
+    const n4 = { x: end.cx + end.w/2, y: end.cy };           // arrive at segmenter's right edge
+    const segs = [[n0, n1], [n1, n2], [n2, n3], [n3, n4]];
+    const lens = segs.map(([a, b]) => Math.hypot(b.x - a.x, b.y - a.y));
+    const total = lens.reduce((a, b) => a + b, 0);
+    let target = subU * total;
+    for (let i = 0; i < segs.length; i++) {
+      if (target <= lens[i] || i === segs.length - 1) {
+        const tt = Math.max(0, Math.min(1, target / Math.max(1e-6, lens[i])));
+        const [a, b] = segs[i];
+        return { x: a.x + (b.x - a.x) * tt, y: a.y + (b.y - a.y) * tt, activeBox: -1 };
+      }
+      target -= lens[i];
+    }
+    return { x: n4.x, y: n4.y, activeBox: -1 };
+  }
+
+  function draw() {
+    fitCanvas();
+    const { boxes, W, H, gutterX } = layout();
+    ctx.clearRect(0, 0, W, H);
+
+    drawLoopback(boxes, gutterX);
+    for (let i = 0; i < boxes.length - 1; i++) {
+      drawForwardArrow(boxes[i], boxes[i + 1], fwdLabels[i]);
+    }
+
+    const u = (t % period) / period;
+    const p = particlePos(u, boxes, gutterX);
+    boxes.forEach((b, i) => drawBox(b, i === p.activeBox));
+
+    ctx.fillStyle = cssVar('--link');
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 7 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = cssVar('--bg');
+    ctx.lineWidth = 1.8 * dpr;
+    ctx.stroke();
+
+    stageOut.textContent = p.activeBox >= 0
+      ? `now: ${stages[p.activeBox]}`
+      : 'now: distilling — fine-tune the 2D segmenter';
+  }
+
+  function tick(ts) {
+    if (!playing) return;
+    const dt = (last ? (ts - last) : 16) / 1000;
+    last = ts;
+    t = (t + dt) % period;
+    draw();
+    requestAnimationFrame(tick);
+  }
+  playBtn.addEventListener('click', () => {
+    playing = !playing;
+    playBtn.textContent = playing ? 'Pause' : 'Play';
+    if (playing) { last = 0; requestAnimationFrame(tick); }
+  });
+  stepBtn.addEventListener('click', () => {
+    t = (t + period / NPHASES) % period;
+    draw();
+  });
+  resetBtn.addEventListener('click', () => {
+    t = 0;
+    draw();
+  });
+
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+
+  function postHeight() { parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*'); }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(() => { draw(); postHeight(); }).observe(document.body);
+</script>
+</body>
+</html>

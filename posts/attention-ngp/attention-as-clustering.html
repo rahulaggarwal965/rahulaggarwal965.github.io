@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attention as soft clustering</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 240px; }
+  .controls input[type=range] { accent-color: var(--link); flex: 1; min-width: 120px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; text-align: right; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .panel { min-width: 0; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>temperature τ <input id="tau" type="range" min="0.05" max="3.0" step="0.01" value="0.5"><span class="val" id="tauV">0.50</span></label>
+  <button id="reset">Reset</button>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">Input neighborhood</p>
+    <canvas id="inC"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">After self-attention</p>
+    <canvas id="outC"></canvas>
+  </div>
+</div>
+<p class="caption">Eight vertex embeddings drawn in a 2D feature space. The left panel shows the inputs; the right shows the output of one self-attention pass with Q = K = V = inputs. At high τ the attention weights are nearly uniform and every output collapses toward the centroid. At low τ each vertex attends almost only to itself — nothing changes. In between, the attention pulls each vertex toward the centroid of its <i>nearest</i> cluster, the noisy outliers drift toward the cluster they're closest to, and the spread tightens. That is, in essence, what we want a denoising step on a noisy semantic neighborhood to do. Drag any input point to see the effect propagate.</p>
+<script>
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const dpr = window.devicePixelRatio || 1;
+  const inC = document.getElementById('inC');
+  const outC = document.getElementById('outC');
+  const ictx = inC.getContext('2d');
+  const octx = outC.getContext('2d');
+  const tauEl = document.getElementById('tau');
+  const tauV = document.getElementById('tauV');
+  const resetBtn = document.getElementById('reset');
+
+  // initial embeddings: two clusters + a couple of noisy ones
+  const init = [
+    { x: 0.22, y: 0.30, hue: 28  }, // cluster A (chair-ish, warm)
+    { x: 0.30, y: 0.36, hue: 22  },
+    { x: 0.18, y: 0.40, hue: 34  },
+    { x: 0.27, y: 0.24, hue: 18  },
+    { x: 0.74, y: 0.70, hue: 215 }, // cluster B (couch-ish, cool)
+    { x: 0.80, y: 0.62, hue: 220 },
+    { x: 0.66, y: 0.74, hue: 210 },
+    { x: 0.50, y: 0.50, hue: 170 }, // an outlier between clusters
+  ];
+  let pts = init.map(p => ({ ...p }));
+  let tau = 0.5;
+
+  function softmax(arr, t) {
+    const m = Math.max(...arr);
+    const exps = arr.map(v => Math.exp((v - m) / t));
+    const s = exps.reduce((a, b) => a + b, 0);
+    return exps.map(v => v / s);
+  }
+
+  function computeOutputs() {
+    // Q = K = V = pts (using x,y as the embedding)
+    const X = pts.map(p => [p.x, p.y]);
+    const out = X.map((q, i) => {
+      const scores = X.map(k => -((q[0]-k[0])**2 + (q[1]-k[1])**2)); // negative squared distance ~ dot-prod-like
+      const w = softmax(scores, tau);
+      let ox = 0, oy = 0;
+      for (let j = 0; j < X.length; j++) { ox += w[j] * X[j][0]; oy += w[j] * X[j][1]; }
+      return { x: ox, y: oy, hue: pts[i].hue, w };
+    });
+    return out;
+  }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+  }
+
+  function drawAxes(ctx, W, H) {
+    ctx.fillStyle = cssVar('--bg');
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = cssVar('--code-bg');
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 6; i++) {
+      const x = i * W/6, y = i * H/6;
+      ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); ctx.stroke();
+    }
+  }
+
+  function drawPoint(ctx, p, W, H, r, label) {
+    const px = p.x * W, py = p.y * H;
+    ctx.fillStyle = `hsl(${p.hue}, 55%, 55%)`;
+    ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = cssVar('--fg');
+    ctx.lineWidth = 1.4 * dpr;
+    ctx.stroke();
+    if (label !== undefined) {
+      ctx.font = `${Math.round(10 * dpr)}px ui-monospace, Menlo, monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#f4ead0'; // light text reads on the saturated hue circle in either theme
+      ctx.fillText(label, px, py);
+    }
+  }
+
+  function drawAttentionMatrix(ctx, W, H, outs) {
+    const N = outs.length;
+    const cell = Math.round(11 * dpr);
+    const size = cell * N;
+    const margin = 10 * dpr;
+    const x0 = W - size - margin;
+    const y0 = H - size - margin;
+    ctx.fillStyle = cssVar('--bg');
+    ctx.globalAlpha = 0.94;
+    ctx.fillRect(x0 - 4, y0 - 14*dpr, size + 8, size + 18*dpr);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 - 4 + 0.5, y0 - 14*dpr + 0.5, size + 8, size + 18*dpr);
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = `${Math.round(9 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('attention weights', x0 - 2, y0 - 12*dpr);
+    const linkColor = cssVar('--link');
+    for (let i = 0; i < N; i++) {
+      const w = outs[i].w;
+      for (let j = 0; j < N; j++) {
+        const v = w[j];
+        ctx.globalAlpha = Math.min(1, v * 1.6);
+        ctx.fillStyle = linkColor;
+        ctx.fillRect(x0 + j*cell, y0 + i*cell, cell - 0.5, cell - 0.5);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function draw() {
+    fitCanvas(inC);
+    fitCanvas(outC);
+    const W = inC.width, H = inC.height;
+    drawAxes(ictx, W, H);
+    drawAxes(octx, W, H);
+
+    const outs = computeOutputs();
+
+    // input panel
+    pts.forEach((p, i) => drawPoint(ictx, p, W, H, 11 * dpr, `${i}`));
+
+    // output panel: draw arrows from input to output, then output points
+    pts.forEach((p, i) => {
+      const o = outs[i];
+      octx.strokeStyle = cssVar('--muted');
+      octx.lineWidth = 1.2 * dpr;
+      octx.beginPath();
+      octx.moveTo(p.x * W, p.y * H);
+      octx.lineTo(o.x * W, o.y * H);
+      octx.stroke();
+      // tiny ghost of input
+      octx.fillStyle = `hsla(${p.hue}, 50%, 55%, 0.25)`;
+      octx.beginPath(); octx.arc(p.x * W, p.y * H, 7 * dpr, 0, Math.PI*2); octx.fill();
+    });
+    outs.forEach((o, i) => drawPoint(octx, o, W, H, 11 * dpr, `${i}`));
+
+    drawAttentionMatrix(octx, W, H, outs);
+  }
+
+  // dragging on input panel
+  let drag = -1;
+  function getXY(c, ev) {
+    const r = c.getBoundingClientRect();
+    const cx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    const cy = (ev.touches ? ev.touches[0].clientY : ev.clientY) - r.top;
+    return { x: Math.max(0, Math.min(1, cx / r.width)), y: Math.max(0, Math.min(1, cy / r.height)) };
+  }
+  function pickIndex(p) {
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const d = Math.hypot(pts[i].x - p.x, pts[i].y - p.y);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return bestD < 0.06 ? best : -1;
+  }
+  function onDown(ev) {
+    const p = getXY(inC, ev);
+    drag = pickIndex(p);
+    if (drag !== -1) ev.preventDefault();
+  }
+  function onMove(ev) {
+    if (drag === -1) return;
+    const p = getXY(inC, ev);
+    pts[drag].x = p.x; pts[drag].y = p.y;
+    draw();
+    ev.preventDefault();
+  }
+  function onUp() { drag = -1; }
+  inC.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+  inC.addEventListener('touchstart', onDown, { passive: false });
+  inC.addEventListener('touchmove', onMove, { passive: false });
+  inC.addEventListener('touchend', onUp);
+
+  tauEl.addEventListener('input', () => {
+    tau = parseFloat(tauEl.value);
+    tauV.textContent = tau.toFixed(2);
+    draw();
+  });
+  resetBtn.addEventListener('click', () => {
+    pts = init.map(p => ({ ...p }));
+    tau = 0.5;
+    tauEl.value = tau;
+    tauV.textContent = tau.toFixed(2);
+    draw();
+  });
+
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+  function postHeight() { parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*'); }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(() => { draw(); postHeight(); }).observe(document.body);
+</script>
+</body>
+</html>

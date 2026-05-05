@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Volumetric rendering of semantics</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 220px; }
+  .controls input[type=range] { accent-color: var(--link); flex: 1; min-width: 110px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; text-align: right; }
+  canvas { width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .legend { display: inline-flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 12px; height: 12px; display: inline-block; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>ray pitch <input id="pitch" type="range" min="-25" max="25" step="0.1" value="-2"><span class="val" id="pitchV">−2°</span></label>
+  <label>samples N <input id="ns" type="range" min="8" max="48" step="1" value="20"><span class="val" id="nsV">20</span></label>
+</div>
+<canvas id="c"></canvas>
+<div class="legend">
+  <span><span class="swatch" style="background:#c87832"></span> chair</span>
+  <span><span class="swatch" style="background:#4a78a8"></span> couch</span>
+  <span><span class="swatch" style="background:#7a8a4a"></span> wall</span>
+  <span><span class="swatch" style="background:#aa9670"></span> empty space</span>
+</div>
+<p class="caption">A side view of a tiny scene with two soft "objects" — a chair (orange) and a couch (blue). The camera fires a single ray from the left. At every sample point along the ray we read off two things: a density σ and a semantic distribution s (the bars below the ray). The familiar volumetric-rendering integral folds those samples into a single pixel: each sample's contribution is weighted by w<sub>n</sub> = T<sub>n</sub>·α<sub>n</sub>, the product of "the ray hasn't been absorbed yet" and "the ray gets absorbed here." The final composited class distribution sits to the right. Slide the ray's pitch — the same scene resolves to whichever object the ray actually punches through.</p>
+<script>
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const dpr = window.devicePixelRatio || 1;
+  const c = document.getElementById('c');
+  const ctx = c.getContext('2d');
+  const pitchEl = document.getElementById('pitch');
+  const pitchV = document.getElementById('pitchV');
+  const nsEl = document.getElementById('ns');
+  const nsV = document.getElementById('nsV');
+
+  // Class palette (same in both themes — these are semantic identities, not UI chrome)
+  const classColors = ['#c87832', '#4a78a8', '#7a8a4a', '#aa9670'];
+  const classLabels = ['chair', 'couch', 'wall', 'empty'];
+
+  // Density blobs in normalized scene coords
+  const objects = [
+    { cx: 0.55, cy: 0.55, r: 0.12, sigmaPeak: 12, dist: [0.92, 0.04, 0.02, 0.02] },
+    { cx: 0.78, cy: 0.40, r: 0.16, sigmaPeak: 10, dist: [0.04, 0.92, 0.02, 0.02] },
+    { cx: 0.95, cy: 0.50, r: 0.05, sigmaPeak: 14, dist: [0.02, 0.02, 0.92, 0.04], wall: true },
+  ];
+
+  function densityAt(x, y) {
+    let total = 0;
+    const contribs = [0, 0, 0, 0];
+    for (const o of objects) {
+      let s;
+      if (o.wall) {
+        const dx = x - 0.96;
+        s = o.sigmaPeak * Math.exp(- (dx*dx) / (0.012*0.012));
+      } else {
+        const dx = x - o.cx, dy = y - o.cy;
+        s = o.sigmaPeak * Math.exp(- (dx*dx + dy*dy) / (o.r*o.r));
+      }
+      total += s;
+      for (let k = 0; k < 4; k++) contribs[k] += s * o.dist[k];
+    }
+    const ambient = 0.08;
+    contribs[3] += ambient;
+    total += ambient;
+    const sNorm = total > 0 ? contribs.map(v => v / total) : [0,0,0,1];
+    return { sigma: total, dist: sNorm };
+  }
+
+  function fitCanvas() {
+    const r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+  }
+
+  // Mix the four class colors by a class-distribution vector, returning rgb in 0..255.
+  function mixClassColor(dist) {
+    let r=0, g=0, b=0;
+    for (let k = 0; k < 4; k++) {
+      const m = classColors[k].match(/^#(..)(..)(..)$/);
+      r += parseInt(m[1],16) * dist[k];
+      g += parseInt(m[2],16) * dist[k];
+      b += parseInt(m[3],16) * dist[k];
+    }
+    return [r|0, g|0, b|0];
+  }
+
+  function draw() {
+    fitCanvas();
+    const W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const COL_FG = cssVar('--fg');
+    const COL_BG = cssVar('--bg');
+    const COL_MUTED = cssVar('--muted');
+    const COL_RULE = cssVar('--rule');
+    const COL_LINK = cssVar('--link');
+
+    // Page-bg fill (sets the canvas to match site bg)
+    ctx.fillStyle = COL_BG;
+    ctx.fillRect(0, 0, W, H);
+
+    const sceneRight = 0.85;
+    const sceneW = W * sceneRight;
+
+    // Subtle scene-panel tint (slightly darker than background)
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = cssVar('--code-bg');
+    ctx.fillRect(0, 0, sceneW, H);
+    ctx.globalAlpha = 1;
+
+    // Density heatmap of the scene
+    const cells = 60;
+    const cellW = sceneW / cells, cellH = H / cells;
+    for (let iy = 0; iy < cells; iy++) {
+      for (let ix = 0; ix < cells; ix++) {
+        const sx = (ix + 0.5) / cells;
+        const sy = (iy + 0.5) / cells;
+        const { sigma, dist } = densityAt(sx, sy);
+        if (sigma < 0.4) continue;
+        const [r, g, b] = mixClassColor(dist);
+        const a = Math.min(0.85, 0.05 + sigma * 0.06);
+        ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
+        ctx.fillRect(ix * cellW, iy * cellH, cellW + 1, cellH + 1);
+      }
+    }
+
+    // Camera origin
+    const cam = { x: 0.04, y: 0.62 };
+    const camPx = cam.x * sceneW, camPy = cam.y * H;
+
+    // Ray direction
+    const pitch = parseFloat(pitchEl.value) * Math.PI / 180;
+    const rdx = Math.cos(pitch), rdy = -Math.sin(pitch);
+    const tMax = (1.0 - cam.x) / Math.max(0.01, rdx);
+    const N = parseInt(nsEl.value, 10);
+    const tStart = 0.04;
+    const samples = [];
+    for (let i = 0; i < N; i++) {
+      const t = tStart + (tMax - tStart) * (i + 0.5) / N;
+      const sx = cam.x + rdx * t;
+      const sy = cam.y + rdy * t;
+      if (sx < 0 || sx > 1 || sy < 0 || sy > 1) continue;
+      const d = densityAt(sx, sy);
+      samples.push({ t, sx, sy, sigma: d.sigma, dist: d.dist });
+    }
+    const delta = (tMax - tStart) / N;
+
+    // Composite
+    let T = 1;
+    const composited = [0, 0, 0, 0];
+    for (const s of samples) {
+      const alpha = 1 - Math.exp(-s.sigma * delta);
+      const w = T * alpha;
+      s.alpha = alpha; s.T = T; s.w = w;
+      for (let k = 0; k < 4; k++) composited[k] += w * s.dist[k];
+      T = T * (1 - alpha);
+    }
+    composited[3] += T * 1.0;
+    const compSum = composited.reduce((a,b) => a+b, 0);
+    const compNorm = composited.map(v => v / Math.max(1e-6, compSum));
+
+    // Ray
+    ctx.strokeStyle = COL_FG;
+    ctx.globalAlpha = 0.55;
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.lineWidth = 1.2 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(camPx, camPy);
+    ctx.lineTo(cam.x * sceneW + rdx * tMax * sceneW, cam.y * H + rdy * tMax * H);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    // Camera marker
+    ctx.fillStyle = COL_FG;
+    ctx.beginPath(); ctx.arc(camPx, camPy, 6 * dpr, 0, Math.PI*2); ctx.fill();
+    ctx.font = `${Math.round(12*dpr)}px Charter, Georgia, serif`;
+    ctx.fillStyle = COL_MUTED;
+    ctx.textAlign = 'left';
+    ctx.fillText('camera', camPx + 9*dpr, camPy + 4*dpr);
+
+    // Per-sample marks: density bar above + colored dot weighted by w_n
+    const barH = 24 * dpr;
+    for (const s of samples) {
+      const px = s.sx * sceneW;
+      const py = s.sy * H;
+      ctx.fillStyle = COL_FG;
+      ctx.beginPath(); ctx.arc(px, py, 2.6 * dpr, 0, Math.PI*2); ctx.fill();
+      const dh = Math.min(barH, s.sigma * 2 * dpr);
+      ctx.fillStyle = COL_LINK;
+      ctx.globalAlpha = Math.min(0.75, 0.2 + s.sigma * 0.05);
+      ctx.fillRect(px - 0.8*dpr, py - dh, 1.6*dpr, dh);
+      ctx.globalAlpha = 1;
+      const wAlpha = Math.min(0.85, s.w * 4);
+      if (wAlpha > 0.05) {
+        const [r, g, b] = mixClassColor(s.dist);
+        ctx.fillStyle = `rgba(${r},${g},${b},${wAlpha})`;
+        ctx.beginPath(); ctx.arc(px, py, 6 * dpr, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = COL_FG;
+        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 0.8 * dpr;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Strip below the ray with per-sample weight w_n
+    const stripY = H - 70 * dpr;
+    const stripH = 30 * dpr;
+    ctx.fillStyle = COL_BG;
+    ctx.globalAlpha = 0.92;
+    ctx.fillRect(8 * dpr, stripY - 16 * dpr, sceneW - 16 * dpr, stripH + 24 * dpr);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = COL_RULE;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(8 * dpr + 0.5, stripY - 16 * dpr + 0.5, sceneW - 16 * dpr, stripH + 24 * dpr);
+    ctx.fillStyle = COL_MUTED;
+    ctx.font = `${Math.round(11.5 * dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('per-sample weight w_n = T_n · α_n', 14 * dpr, stripY - 4 * dpr);
+    const stripStart = 14 * dpr, stripEnd = sceneW - 14 * dpr;
+    const stripWidth = stripEnd - stripStart;
+    for (const s of samples) {
+      const u = (s.t - tStart) / (tMax - tStart);
+      const x = stripStart + u * stripWidth;
+      const h = Math.max(1, s.w * stripH * 4);
+      ctx.fillStyle = COL_LINK;
+      ctx.fillRect(x - 1.5 * dpr, stripY + stripH - h, 3 * dpr, h);
+    }
+
+    // Right column: composited stacked bar
+    const histX = sceneW + 12 * dpr;
+    const histW = W - sceneW - 18 * dpr;
+    const histY = 30 * dpr;
+    const histH = H - 60 * dpr;
+    ctx.fillStyle = COL_BG;
+    ctx.fillRect(sceneW + 4 * dpr, 0, W - sceneW - 4 * dpr, H);
+    ctx.fillStyle = COL_FG;
+    ctx.font = `${Math.round(12.5*dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('rendered pixel', sceneW + (W - sceneW)/2, 16 * dpr);
+
+    let acc = 0;
+    for (let k = 0; k < 4; k++) {
+      const v = compNorm[k];
+      const y0 = histY + acc * histH;
+      const yh = v * histH;
+      ctx.fillStyle = classColors[k];
+      ctx.fillRect(histX, y0, histW, yh);
+      ctx.strokeStyle = COL_FG;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(histX + 0.5, y0 + 0.5, histW, yh);
+      ctx.globalAlpha = 1;
+      if (yh > 14 * dpr) {
+        ctx.fillStyle = '#1c1813'; // legible against the saturated class colors regardless of theme
+        ctx.font = `${Math.round(11*dpr)}px Charter, Georgia, serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${classLabels[k]} ${(v*100).toFixed(0)}%`, histX + histW/2, y0 + yh/2);
+      }
+      acc += v;
+    }
+
+    let top = 0;
+    for (let k = 1; k < 4; k++) if (compNorm[k] > compNorm[top]) top = k;
+    ctx.fillStyle = COL_FG;
+    ctx.font = `bold ${Math.round(14*dpr)}px Charter, Georgia, serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`→ ${classLabels[top]}`, sceneW + (W - sceneW)/2, H - 18 * dpr);
+  }
+
+  pitchEl.addEventListener('input', () => {
+    const v = parseFloat(pitchEl.value);
+    pitchV.textContent = `${v >= 0 ? '' : '−'}${Math.abs(v).toFixed(1)}°`;
+    draw();
+  });
+  nsEl.addEventListener('input', () => {
+    nsV.textContent = nsEl.value;
+    draw();
+  });
+
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+
+  function postHeight() { parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*'); }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(() => { draw(); postHeight(); }).observe(document.body);
+</script>
+</body>
+</html>

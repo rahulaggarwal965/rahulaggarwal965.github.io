@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-view inconsistency</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 10px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 240px; }
+  .controls input[type=range] { accent-color: var(--link); flex: 1; min-width: 120px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; text-align: right; }
+  .controls button {
+    font-family: inherit; font-size: 13px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 4px 12px; cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--link); color: var(--link); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .panel { min-width: 0; }
+  .panel-title { font-size: 11px; color: var(--muted); margin: 0 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; border: 1px solid var(--rule); border-radius: 4px; display: block; background: var(--bg); }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>camera angle <input id="theta" type="range" min="0" max="360" step="1" value="35"><span class="val" id="thetaV">35°</span></label>
+  <button id="play">Orbit</button>
+</div>
+<div class="grid">
+  <div class="panel">
+    <p class="panel-title">RGB view</p>
+    <canvas id="rgb"></canvas>
+  </div>
+  <div class="panel">
+    <p class="panel-title">2D model's labels</p>
+    <canvas id="lbl"></canvas>
+  </div>
+</div>
+<p class="caption">A simulated indoor scene rendered from a moving camera. The right panel shows what an off-the-shelf 2D segmentation network labels each object. The chair drifts between <i>armchair</i>, <i>chair</i>, and <i>ottoman</i> as the camera moves; the couch flips between <i>couch</i> and <i>sofa</i>; the wall colour changes once the model decides the surface is part of a different room. Nothing about the scene has changed — only the angle.</p>
+<script>
+  const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const dpr = window.devicePixelRatio || 1;
+  const rgbC = document.getElementById('rgb');
+  const lblC = document.getElementById('lbl');
+  const rctx = rgbC.getContext('2d');
+  const lctx = lblC.getContext('2d');
+  const thetaEl = document.getElementById('theta');
+  const thetaV = document.getElementById('thetaV');
+  const playBtn = document.getElementById('play');
+
+  // Scene: every object is a SINGLE axis-aligned box with non-overlapping volumes.
+  // Coincident boundary planes (lamp bottom resting on table top) are fine — back-face
+  // culling hides the lamp's bottom face and the table's top is drawn unobscured up to
+  // the lamp's footprint. No interior intersections — that's what was causing the
+  // table-leg-vs-tabletop clipping artifacts before.
+  const scene = [
+    // floor — pulled in slightly so it's smaller than the back/side walls bounding it
+    { kind: 'box', c:[0, -0.05, 0], s:[5.6, 0.10, 5.6], color:'#a8957a', id:'floor' },
+    // back wall (y in [-0.10, 1.90], z in [-2.45, -2.35])
+    { kind: 'box', c:[0, 0.9, -2.4], s:[5.6, 2.0, 0.10], color:'#d4c8ac', id:'wall' },
+    // side wall (x in [-3.00, -2.90], y in [-0.10, 1.90], z in [-2.45, 2.45])
+    { kind: 'box', c:[-2.95, 0.9, 0], s:[0.10, 2.0, 4.9], color:'#c8bba0', id:'wall2' },
+    // couch
+    { kind: 'box', c:[-0.5, 0.4, -1.55], s:[2.4, 0.8, 0.9], color:'#5e7796', id:'couch' },
+    // chair
+    { kind: 'box', c:[1.6, 0.5, 0.5], s:[0.7, 1.0, 0.7], color:'#8a5a32', id:'chair' },
+    // SOLID table — single box, not a tabletop+legs assembly (avoids leg/tabletop interior intersection)
+    { kind: 'box', c:[0.0, 0.20, 0.4], s:[1.0, 0.40, 0.5], color:'#5b3f24', id:'table' },
+    // lamp resting on the table (lamp bottom y = 0.40 == table top y; coincident, not overlapping)
+    { kind: 'box', c:[-0.1, 0.60, 0.4], s:[0.18, 0.40, 0.18], color:'#d8c577', id:'lamp' },
+  ];
+
+  // Per-id, the 2D model's prediction varies with the camera angle. Each entry maps angle range to {label, color}.
+  // The colors here are the visualization color in the label panel. Inconsistency = color flips.
+  function labelFor(id, theta) {
+    const t = ((theta % 360) + 360) % 360;
+    const inRange = (a, b) => (a <= b ? (t >= a && t < b) : (t >= a || t < b));
+    if (id === 'floor') return { label:'floor', color:'#b0a07a' };
+    if (id === 'lamp')  return { label:'lamp',  color:'#d6c46b' };
+    if (id === 'wall' || id === 'wall2') {
+      if (inRange(40, 200)) return { label:'wall', color:'#cdb88a' };
+      return { label:'wall (other room)', color:'#9b8866' };
+    }
+    if (id === 'couch') {
+      if (inRange(0, 90))   return { label:'couch', color:'#5a76a8' };
+      if (inRange(90, 200)) return { label:'sofa',  color:'#7a8fbf' };
+      if (inRange(200, 320))return { label:'bed',   color:'#3a4a78' };
+      return { label:'couch', color:'#5a76a8' };
+    }
+    if (id === 'chair') {
+      if (inRange(0, 80))    return { label:'armchair', color:'#aa5a3a' };
+      if (inRange(80, 170))  return { label:'chair',    color:'#d18550' };
+      if (inRange(170, 260)) return { label:'ottoman', color:'#a47a3a' };
+      return { label:'stool', color:'#8a5a82' };
+    }
+    if (id === 'table') {
+      if (inRange(0, 110))   return { label:'table', color:'#544133' };
+      if (inRange(110, 240)) return { label:'desk',  color:'#776055' };
+      return { label:'table', color:'#544133' };
+    }
+    return { label:id, color:'#888' };
+  }
+
+  // Camera + perspective projection. Returns both the camera position and a project() closure.
+  function makeCamera(theta, w, h) {
+    const phi = 18 * Math.PI/180;          // positive: camera tilted DOWN from horizontal-ish
+    const r = 6.2;                          // distance from scene center
+    const cy = 1.5;                         // base camera height
+    const ct = Math.cos(theta * Math.PI/180), st = Math.sin(theta * Math.PI/180);
+    const cp = Math.cos(phi), sp = Math.sin(phi);
+    const cam = { x: r*ct*cp, y: cy + r*sp, z: r*st*cp };
+    const tgt = { x: 0, y: 0.5, z: 0 };
+    let fx = tgt.x - cam.x, fy = tgt.y - cam.y, fz = tgt.z - cam.z;
+    const fl = Math.hypot(fx, fy, fz); fx/=fl; fy/=fl; fz/=fl;
+    let rx = fy*0 - fz*1, ry = fz*0 - fx*0, rz = fx*1 - fy*0;     // forward x worldUp(0,1,0)
+    const rl = Math.hypot(rx, ry, rz); rx/=rl; ry/=rl; rz/=rl;
+    const tux = ry*fz - rz*fy, tuy = rz*fx - rx*fz, tuz = rx*fy - ry*fx;
+    const f = 1.45;
+    function project(p) {
+      const dx = p[0] - cam.x, dy = p[1] - cam.y, dz = p[2] - cam.z;
+      const xc = dx*rx + dy*ry + dz*rz;
+      const yc = dx*tux + dy*tuy + dz*tuz;
+      const zc = dx*fx + dy*fy + dz*fz;
+      if (zc <= 0.05) return null;
+      const u = (xc / zc) * f;
+      const v = (yc / zc) * f;
+      return { x: w*0.5 + u*w*0.5, y: h*0.5 - v*h*0.5, z: zc };
+    }
+    return { cam, project };
+  }
+
+  // 8 vertices of a unit cube centered at origin (side = 1).
+  // Indexing: bit 0 = +x, bit 1 = +y, bit 2 = +z.
+  const boxVerts = [
+    [-0.5,-0.5,-0.5],[ 0.5,-0.5,-0.5],[-0.5, 0.5,-0.5],[ 0.5, 0.5,-0.5],
+    [-0.5,-0.5, 0.5],[ 0.5,-0.5, 0.5],[-0.5, 0.5, 0.5],[ 0.5, 0.5, 0.5],
+  ];
+  // 6 faces with consistent CCW outward winding (so (b-a) x (c-b) == outward normal).
+  const boxFaces = [
+    { ids: [4,5,7,6], n: [ 0, 0, 1] }, // +z front
+    { ids: [1,0,2,3], n: [ 0, 0,-1] }, // -z back
+    { ids: [2,6,7,3], n: [ 0, 1, 0] }, // +y top
+    { ids: [0,1,5,4], n: [ 0,-1, 0] }, // -y bottom
+    { ids: [1,3,7,5], n: [ 1, 0, 0] }, // +x right
+    { ids: [0,4,6,2], n: [-1, 0, 0] }, // -x left
+  ];
+
+  function shade(hex, factor) {
+    // factor in [0,1]
+    const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    if (!m) return hex;
+    const r = parseInt(m[1],16), g = parseInt(m[2],16), b = parseInt(m[3],16);
+    const r2 = Math.max(0, Math.min(255, Math.round(r*factor)));
+    const g2 = Math.max(0, Math.min(255, Math.round(g*factor)));
+    const b2 = Math.max(0, Math.min(255, Math.round(b*factor)));
+    return '#' + [r2,g2,b2].map(x => x.toString(16).padStart(2,'0')).join('');
+  }
+
+  function drawScene(ctx, w, h, theta, mode) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = cssVar('--bg');
+    ctx.fillRect(0, 0, w, h);
+    // very subtle floor tint
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = cssVar('--code-bg');
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalAlpha = 1;
+
+    const { cam, project: proj } = makeCamera(theta, w, h);
+
+    // Per-box rendering with proper outward-normal back-face culling.
+    //
+    // Sort key: each box's FARTHEST vertex in camera-frame z (i.e. max forward distance
+    // among its 8 corners). This is the correct depth heuristic for painter's algorithm
+    // when boxes have very different sizes — using the box CENTER (or distance-to-center)
+    // mis-orders a large flat object like the floor against smaller objects sitting on
+    // it, because the floor's center can be closer to the camera than a small object
+    // whose center is farther but whose entire volume sits *in front of* the floor.
+    // Farthest-vertex z asks "what's the deepest point of this box from the camera's
+    // POV?" — which is exactly the right question for non-intersecting boxes.
+    const boxRenders = [];
+    for (const obj of scene) {
+      const worldVerts = boxVerts.map(v => [
+        obj.c[0] + v[0]*obj.s[0],
+        obj.c[1] + v[1]*obj.s[1],
+        obj.c[2] + v[2]*obj.s[2],
+      ]);
+      const screenVerts = worldVerts.map(v => proj(v));
+      const validZ = screenVerts.filter(p => p != null).map(p => p.z);
+      if (validZ.length === 0) continue;
+      const farthestZ = Math.max(...validZ);
+
+      const wcx = obj.c[0], wcy = obj.c[1], wcz = obj.c[2];
+      const lbl = labelFor(obj.id, theta);
+      const baseColor = mode === 'rgb' ? obj.color : lbl.color;
+      const visibleFaces = [];
+      for (const face of boxFaces) {
+        const fv2 = face.ids.map(i => screenVerts[i]);
+        if (fv2.some(p => p == null)) continue;
+        const [nx, ny, nz] = face.n;
+        // Face center in world space = box center + outward-normal · half-extent along that axis
+        const fcx = wcx + nx * obj.s[0] * 0.5;
+        const fcy = wcy + ny * obj.s[1] * 0.5;
+        const fcz = wcz + nz * obj.s[2] * 0.5;
+        // Back-face cull: outward normal · (face_center - camera) > 0  ⇒  facing away from camera
+        const vx = fcx - cam.x, vy = fcy - cam.y, vz = fcz - cam.z;
+        if (nx*vx + ny*vy + nz*vz >= 0) continue;
+        // Lambert shading
+        const lx = 0.42, ly = 0.86, lz = 0.30;
+        const ll = Math.hypot(lx, ly, lz);
+        const ndotl = (nx*lx + ny*ly + nz*lz) / ll;
+        const shadeFactor = 0.58 + 0.42 * Math.max(0, ndotl);
+        const color = mode === 'rgb'
+          ? shade(baseColor, shadeFactor)
+          : shade(baseColor, 0.80 + 0.20*shadeFactor);
+        visibleFaces.push({ pts: fv2, color, edge: shade(baseColor, 0.40) });
+      }
+      boxRenders.push({ id: obj.id, depth: farthestZ, faces: visibleFaces, screenVerts });
+    }
+    // Painter's algorithm: draw farthest box first, nearest last.
+    boxRenders.sort((a, b) => b.depth - a.depth);
+    for (const br of boxRenders) {
+      for (const f of br.faces) {
+        ctx.beginPath();
+        ctx.moveTo(f.pts[0].x, f.pts[0].y);
+        for (let i = 1; i < f.pts.length; i++) ctx.lineTo(f.pts[i].x, f.pts[i].y);
+        ctx.closePath();
+        ctx.fillStyle = f.color;
+        ctx.fill();
+        ctx.strokeStyle = f.edge;
+        ctx.lineWidth = 0.7;
+        ctx.stroke();
+      }
+    }
+
+    // In label mode, attach a text label at each id's projected bbox centroid.
+    if (mode === 'lbl') {
+      const groups = {};
+      for (const br of boxRenders) {
+        if (br.id === 'floor') continue;
+        const lbl = labelFor(br.id, theta);
+        const pts = br.screenVerts.filter(p => p);
+        if (!pts.length) continue;
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        const zavg = pts.reduce((s, p) => s + p.z, 0) / pts.length;
+        const bb = { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), z: zavg };
+        if (!groups[br.id]) {
+          groups[br.id] = { bb, lbl };
+        } else {
+          const g = groups[br.id].bb;
+          g.x0 = Math.min(g.x0, bb.x0);
+          g.x1 = Math.max(g.x1, bb.x1);
+          g.y0 = Math.min(g.y0, bb.y0);
+          g.y1 = Math.max(g.y1, bb.y1);
+          g.z  = Math.min(g.z,  bb.z);
+        }
+      }
+      ctx.font = `${Math.round(12*dpr)}px Charter, Georgia, serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (const id of Object.keys(groups)) {
+        const { bb, lbl } = groups[id];
+        const cx = (bb.x0 + bb.x1)/2, cy = (bb.y0 + bb.y1)/2;
+        if (cx < 0 || cx > w || cy < 0 || cy > h) continue;
+        const text = lbl.label;
+        const tw = ctx.measureText(text).width;
+        const padX = 5*dpr, padY = 3*dpr;
+        ctx.fillStyle = cssVar('--fg');
+        ctx.globalAlpha = 0.86;
+        ctx.fillRect(cx - tw/2 - padX, cy - 7.5*dpr - padY, tw + padX*2, 15*dpr + padY*2);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = cssVar('--bg');
+        ctx.fillText(text, cx, cy);
+      }
+    }
+  }
+
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+    return [c.width, c.height];
+  }
+
+  let theta = parseFloat(thetaEl.value);
+
+  function draw() {
+    const [w1, h1] = fitCanvas(rgbC);
+    const [w2, h2] = fitCanvas(lblC);
+    drawScene(rctx, w1, h1, theta, 'rgb');
+    drawScene(lctx, w2, h2, theta, 'lbl');
+  }
+
+  thetaEl.addEventListener('input', () => {
+    theta = parseFloat(thetaEl.value);
+    thetaV.textContent = `${Math.round(theta)}°`;
+    draw();
+  });
+
+  let playing = false, last = 0;
+  function tick(ts) {
+    if (!playing) return;
+    const dt = (last ? (ts - last) : 16) / 1000;
+    last = ts;
+    theta = (theta + dt * 18) % 360;
+    thetaEl.value = theta;
+    thetaV.textContent = `${Math.round(theta)}°`;
+    draw();
+    requestAnimationFrame(tick);
+  }
+  playBtn.addEventListener('click', () => {
+    playing = !playing;
+    playBtn.textContent = playing ? 'Pause' : 'Orbit';
+    if (playing) { last = 0; requestAnimationFrame(tick); }
+  });
+
+  draw();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+
+  function postHeight() {
+    parent.postMessage({ type: 'viz-height', height: document.body.scrollHeight }, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(() => { draw(); postHeight(); }).observe(document.body);
+</script>
+</body>
+</html>
