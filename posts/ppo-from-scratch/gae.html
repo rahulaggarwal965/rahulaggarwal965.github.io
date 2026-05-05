@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GAE: rewards → advantages</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 8px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 220px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3em; color: var(--fg); font-size: 12px; }
+  .row-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  canvas { width: 100%; display: block; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>λ <input id="lam" type="range" min="0" max="1" step="0.01" value="0.95"><span class="val" id="lamV">0.95</span></label>
+  <label>γ <input id="gam" type="range" min="0.5" max="0.999" step="0.001" value="0.99"><span class="val" id="gamV">0.99</span></label>
+</div>
+<canvas id="c"></canvas>
+<p class="caption">A toy 16-step trajectory. Top: rewards r<sub>t</sub>. Middle: TD residuals δ<sub>t</sub> = r<sub>t</sub> + γV(s<sub>t+1</sub>) − V(s<sub>t</sub>) — short-horizon, low-variance, but biased by whatever V is wrong about. Bottom: GAE advantages Â<sub>t</sub><sup>(λ)</sup>, the geometric blend Σ(γλ)<sup>k</sup>δ<sub>t+k</sub>. Slide λ to 0 and Â<sub>t</sub> = δ<sub>t</sub> (TD(0)). Slide to 1 and Â<sub>t</sub> becomes the full Monte-Carlo return minus V(s<sub>t</sub>). Everything in between trades bias for variance smoothly.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const lamEl = document.getElementById('lam');
+  const gamEl = document.getElementById('gam');
+  const lamV = document.getElementById('lamV');
+  const gamV = document.getElementById('gamV');
+
+  const dpr = window.devicePixelRatio || 1;
+
+  // toy trajectory
+  const N = 16;
+  // rewards: small positive baseline with a spike around t=8
+  const rewards = [];
+  const values  = [];
+  for (let t = 0; t < N; t++) {
+    let r = 0.3 + 0.15 * Math.sin(t * 0.6);
+    if (t >= 7 && t <= 10) r += 0.6 * Math.exp(-Math.pow(t - 8.5, 2) / 1.8);
+    rewards.push(r);
+    // a deliberately imperfect value function — under-predicts the spike
+    values.push(0.4 + 0.1 * Math.cos(t * 0.45));
+  }
+  values.push(0.4); // V(s_N) bootstrap
+
+  function computeDeltas(gamma) {
+    const d = new Array(N);
+    for (let t = 0; t < N; t++) d[t] = rewards[t] + gamma * values[t + 1] - values[t];
+    return d;
+  }
+  function computeAdvantages(deltas, gamma, lambda) {
+    const a = new Array(N);
+    let acc = 0;
+    for (let t = N - 1; t >= 0; t--) { acc = deltas[t] + gamma * lambda * acc; a[t] = acc; }
+    return a;
+  }
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    const desiredH = 320;
+    canvas.style.height = desiredH + 'px';
+    canvas.width = r.width * dpr;
+    canvas.height = desiredH * dpr;
+    return [r.width, desiredH];
+  }
+
+  function drawRow(label, vals, x0, y0, w, h, color, scale) {
+    const cellW = w / N;
+    const baseY = y0 + h / 2;
+
+    // label
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = '10px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(label, x0, y0 - 14);
+
+    // baseline
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, baseY);
+    ctx.lineTo(x0 + w, baseY);
+    ctx.stroke();
+
+    for (let t = 0; t < N; t++) {
+      const v = vals[t];
+      const bh = (v / scale) * (h / 2 - 2);
+      const bx = x0 + t * cellW + 1;
+      const by = bh >= 0 ? baseY - bh : baseY;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.65;
+      ctx.fillRect(bx, by, cellW - 2, Math.abs(bh));
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function draw(w, h) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const gamma = parseFloat(gamEl.value);
+    const lambda = parseFloat(lamEl.value);
+
+    const deltas = computeDeltas(gamma);
+    const adv = computeAdvantages(deltas, gamma, lambda);
+
+    const padL = 14, padR = 14;
+    const innerW = w - padL - padR;
+    const rowH = (h - 60) / 3;
+    const gap = 18;
+
+    const rScale = Math.max(...rewards.map(Math.abs)) * 1.1;
+    const dScale = Math.max(0.001, Math.max(...deltas.map(Math.abs))) * 1.1;
+    const aScale = Math.max(0.001, Math.max(...adv.map(Math.abs))) * 1.1;
+
+    drawRow('rewards r_t',         rewards, padL, 18,                    innerW, rowH, cssVar('--link'),  rScale);
+    drawRow('TD residuals δ_t',    deltas,  padL, 18 + rowH + gap,       innerW, rowH, cssVar('--link'),  dScale);
+    drawRow('advantages Â_t (λ)',  adv,     padL, 18 + 2*(rowH + gap),   innerW, rowH, cssVar('--link'),  aScale);
+  }
+
+  function redraw() {
+    lamV.textContent = parseFloat(lamEl.value).toFixed(2);
+    gamV.textContent = parseFloat(gamEl.value).toFixed(3);
+    const [w, h] = fitCanvas();
+    draw(w, h);
+  }
+
+  lamEl.addEventListener('input', redraw);
+  gamEl.addEventListener('input', redraw);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  window.addEventListener('resize', redraw);
+  redraw();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

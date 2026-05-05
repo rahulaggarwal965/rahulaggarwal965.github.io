@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The clipped surrogate objective</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 8px;
+  }
+  .controls label { display: inline-flex; align-items: center; gap: 6px; }
+  .controls input[type=range] { accent-color: var(--link); width: 200px; }
+  .controls .val { font-variant-numeric: tabular-nums; min-width: 3.2em; color: var(--fg); font-size: 12px; }
+  canvas { width: 100%; display: block; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+  .legend { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 14px; }
+  .legend .swatch { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <label>A <input id="adv" type="range" min="-2" max="2" step="0.05" value="1"><span class="val" id="advV">+1.00</span></label>
+  <label>ε <input id="eps" type="range" min="0.05" max="0.5" step="0.01" value="0.2"><span class="val" id="epsV">0.20</span></label>
+</div>
+<canvas id="c"></canvas>
+<div class="legend">
+  <span><span class="swatch" style="background: var(--muted); height: 1.5px; border-top: 1.5px dashed var(--muted);"></span>r·A (unclipped)</span>
+  <span><span class="swatch" style="background: var(--link);"></span>L<sup>CLIP</sup> = min(r·A, clip·A)</span>
+</div>
+<p class="caption">L<sup>CLIP</sup>(r) = min(r·A, clip(r, 1−ε, 1+ε)·A) as a function of the probability ratio r = π<sub>θ</sub>/π<sub>θ_old</sub>. Slide A and watch the asymmetry. When A &gt; 0, the upper clip caps the gain — fine. When A &lt; 0, you might expect the lower clip to do the symmetric job, but the min picks the worse of the two terms: if r drifts past 1+ε while A &lt; 0, we get the unclipped (deeply negative) penalty rather than letting the clip mask it. The min is the whole point — it's why bad updates don't get a free pass.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const advEl = document.getElementById('adv');
+  const epsEl = document.getElementById('eps');
+  const advV = document.getElementById('advV');
+  const epsV = document.getElementById('epsV');
+
+  const dpr = window.devicePixelRatio || 1;
+  const R_MIN = 0, R_MAX = 2;
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    const desiredH = 340;
+    canvas.style.height = desiredH + 'px';
+    canvas.width = r.width * dpr;
+    canvas.height = desiredH * dpr;
+    return [r.width, desiredH];
+  }
+
+  function clip(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+
+  function draw(w, h) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const A = parseFloat(advEl.value);
+    const eps = parseFloat(epsEl.value);
+
+    // axes
+    const padL = 56, padR = 18, padT = 18, padB = 36;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    const x0 = padL, y0 = padT;
+
+    const yMax = Math.max(2.5 * Math.abs(A), 0.5);
+    const yMin = -yMax;
+
+    function xPx(r) { return x0 + (r - R_MIN) / (R_MAX - R_MIN) * plotW; }
+    function yPx(v) { return y0 + (1 - (v - yMin) / (yMax - yMin)) * plotH; }
+
+    // y=0 baseline
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, yPx(0));
+    ctx.lineTo(x0 + plotW, yPx(0));
+    ctx.stroke();
+
+    // x=1 vertical
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.beginPath();
+    ctx.moveTo(xPx(1), y0);
+    ctx.lineTo(xPx(1), y0 + plotH);
+    ctx.stroke();
+
+    // clip range bands
+    ctx.fillStyle = cssVar('--muted');
+    ctx.globalAlpha = 0.08;
+    ctx.fillRect(xPx(1 - eps), y0, xPx(1 + eps) - xPx(1 - eps), plotH);
+    ctx.globalAlpha = 1;
+    // 1±eps verticals
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xPx(1 - eps), y0); ctx.lineTo(xPx(1 - eps), y0 + plotH);
+    ctx.moveTo(xPx(1 + eps), y0); ctx.lineTo(xPx(1 + eps), y0 + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // axis labels
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('1−ε', xPx(1 - eps), y0 + plotH + 4);
+    ctx.fillText('1',   xPx(1),       y0 + plotH + 4);
+    ctx.fillText('1+ε', xPx(1 + eps), y0 + plotH + 4);
+    ctx.fillText('0',   xPx(0),       y0 + plotH + 4);
+    ctx.fillText('2',   xPx(2),       y0 + plotH + 4);
+
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('0', x0 - 6, yPx(0));
+    ctx.fillText(`+${(yMax).toFixed(1)}`, x0 - 6, yPx(yMax * 0.92));
+    ctx.fillText(`−${(yMax).toFixed(1)}`, x0 - 6, yPx(-yMax * 0.92));
+
+    // x-axis title
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 12px Charter, Georgia, serif';
+    ctx.fillText('ratio  r = π_θ(a|s) / π_θ_old(a|s)', x0 + plotW / 2, h - 4);
+
+    // unclipped r·A (dashed)
+    ctx.strokeStyle = cssVar('--muted');
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(xPx(R_MIN), yPx(R_MIN * A));
+    ctx.lineTo(xPx(R_MAX), yPx(R_MAX * A));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // L^CLIP curve
+    ctx.strokeStyle = cssVar('--link');
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    const STEPS = 600;
+    for (let i = 0; i <= STEPS; i++) {
+      const r = R_MIN + (R_MAX - R_MIN) * i / STEPS;
+      const unclipped = r * A;
+      const clipped = clip(r, 1 - eps, 1 + eps) * A;
+      const L = Math.min(unclipped, clipped);
+      const px = xPx(r), py = yPx(L);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // marker at r=1
+    ctx.fillStyle = cssVar('--link');
+    ctx.beginPath();
+    ctx.arc(xPx(1), yPx(A), 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // annotation: where min "kicks"
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = 'italic 11px Charter, Georgia, serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    if (A > 0) {
+      ctx.fillText('A>0: gain capped at r = 1+ε', xPx(1 + eps) + 8, yPx(A * (1 + eps)));
+    } else if (A < 0) {
+      ctx.fillText('A<0: penalty unleashed past r = 1+ε', xPx(1 + eps) + 8, yPx(A * 1.5));
+    }
+  }
+
+  function redraw() {
+    const A = parseFloat(advEl.value);
+    advV.textContent = (A >= 0 ? '+' : '') + A.toFixed(2);
+    epsV.textContent = parseFloat(epsEl.value).toFixed(2);
+    const [w, h] = fitCanvas();
+    draw(w, h);
+  }
+
+  advEl.addEventListener('input', redraw);
+  epsEl.addEventListener('input', redraw);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
+  window.addEventListener('resize', redraw);
+  redraw();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>

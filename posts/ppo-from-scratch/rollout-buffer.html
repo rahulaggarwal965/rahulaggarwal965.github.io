@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rollout buffer</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+  body { padding: 0.5rem 0.75rem; box-sizing: border-box; font-family: 'Charter', 'Iowan Old Style', 'Georgia', serif; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+    font-size: 13px; color: var(--muted); margin-bottom: 8px;
+  }
+  .controls button {
+    font: inherit; font-size: 12px; color: var(--fg);
+    background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 3px 10px; cursor: pointer;
+  }
+  .controls button:hover { color: var(--link); }
+  .controls .step-label { font-variant-numeric: tabular-nums; min-width: 5em; color: var(--fg); font-size: 12px; }
+  canvas { width: 100%; display: block; }
+  .legend { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; flex-wrap: wrap; gap: 14px; }
+  .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+  .caption { font-size: 13px; color: var(--muted); margin: 0.7rem 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button id="play">Pause</button>
+  <button id="reset">Reset</button>
+  <span class="step-label">step <span id="stepV">0</span> / 24</span>
+</div>
+<canvas id="c"></canvas>
+<div class="legend">
+  <span><span class="swatch" style="background: var(--link); opacity: 0.55;"></span>reward</span>
+  <span><span class="swatch" style="background: #4a8a3f;"></span>termination (T)</span>
+  <span><span class="swatch" style="background: #c47a2a;"></span>truncation (trunc)</span>
+  <span><span class="swatch" style="background: var(--muted); opacity: 0.6;"></span>advantage window closed</span>
+</div>
+<p class="caption">A 24-step rollout buffer filling left-to-right. Episode boundaries close out an advantage-computation window: termination uses a bootstrap value of 0, truncation bootstraps from V(s<sub>last</sub>). When the buffer fills mid-episode (the unterminated tail at the right), we still bootstrap from V(s<sub>last</sub>) before training. This is the only thing that lets one buffer hold many episodes worth of partial trajectories.</p>
+<script>
+  const cssVar = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const playBtn = document.getElementById('play');
+  const resetBtn = document.getElementById('reset');
+  const stepV = document.getElementById('stepV');
+
+  const N = 24;
+  // pre-baked schedule: kind in {step, term, trunc}, reward magnitude
+  // breakdown: ep1 ends at idx 7 (term), ep2 ends at idx 16 (trunc), ep3 unterminated through 23
+  const schedule = [
+    { r: 0.4 }, { r: 0.6 }, { r: 0.5 }, { r: 0.7 }, { r: 0.55 }, { r: 0.45 }, { r: 0.6 }, { r: 0.5, end: 'term' },
+    { r: 0.3 }, { r: 0.5 }, { r: 0.7 }, { r: 0.6 }, { r: 0.65 }, { r: 0.5 }, { r: 0.45 }, { r: 0.55 }, { r: 0.6, end: 'trunc' },
+    { r: 0.4 }, { r: 0.5 }, { r: 0.6 }, { r: 0.55 }, { r: 0.5 }, { r: 0.6 }, { r: 0.55 },
+  ];
+
+  const dpr = window.devicePixelRatio || 1;
+  let step = 0;
+  let playing = true;
+  let lastTime = performance.now();
+  const STEP_INTERVAL = 0.18; // seconds per step
+
+  function fitCanvas() {
+    const r = canvas.getBoundingClientRect();
+    const desiredH = 220;
+    canvas.style.height = desiredH + 'px';
+    canvas.width = r.width * dpr;
+    canvas.height = desiredH * dpr;
+    return [r.width, desiredH];
+  }
+
+  function draw(w, h) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 12, padR = 12, padT = 30, padB = 56;
+    const cellW = (w - padL - padR) / N;
+    const barTop = padT, barBot = h - padB;
+    const barH = barBot - barTop;
+
+    // baseline
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, barBot);
+    ctx.lineTo(w - padR, barBot);
+    ctx.stroke();
+
+    // top label
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = '11px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('rewards r_t', padL, 6);
+
+    // walking advantage windows (where windows close)
+    const windowEnds = [];
+    for (let i = 0; i < step; i++) {
+      if (schedule[i].end) windowEnds.push(i);
+    }
+    if (step === N) windowEnds.push(N - 1); // bootstrap close at buffer end
+
+    // shade closed windows lightly
+    let prevEnd = -1;
+    ctx.fillStyle = cssVar('--muted');
+    ctx.globalAlpha = 0.08;
+    for (const we of windowEnds) {
+      const x0 = padL + (prevEnd + 1) * cellW;
+      const x1 = padL + (we + 1) * cellW;
+      ctx.fillRect(x0, barTop - 6, x1 - x0, barH + 12);
+      prevEnd = we;
+    }
+    ctx.globalAlpha = 1;
+
+    // reward bars
+    for (let i = 0; i < step; i++) {
+      const x = padL + i * cellW;
+      const r = schedule[i].r;
+      const bh = r * barH * 0.8;
+      ctx.fillStyle = cssVar('--link');
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(x + 1, barBot - bh, cellW - 2, bh);
+      ctx.globalAlpha = 1;
+    }
+
+    // empty-cell outlines for unfilled buffer
+    ctx.strokeStyle = cssVar('--rule');
+    ctx.lineWidth = 1;
+    for (let i = step; i < N; i++) {
+      const x = padL + i * cellW;
+      ctx.strokeRect(x + 1, barTop, cellW - 2, barH);
+    }
+
+    // episode-boundary markers
+    for (let i = 0; i < step; i++) {
+      if (schedule[i].end) {
+        const xRight = padL + (i + 1) * cellW;
+        ctx.strokeStyle = schedule[i].end === 'term' ? '#4a8a3f' : '#c47a2a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(xRight, barTop - 4);
+        ctx.lineTo(xRight, barBot + 4);
+        ctx.stroke();
+
+        ctx.fillStyle = schedule[i].end === 'term' ? '#4a8a3f' : '#c47a2a';
+        ctx.font = '10px ui-monospace, Menlo, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(schedule[i].end === 'term' ? 'T' : 'trunc', xRight, barBot + 6);
+      }
+    }
+
+    // index ticks
+    ctx.fillStyle = cssVar('--muted');
+    ctx.font = '10px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < N; i++) {
+      if (i % 4 === 0 || i === N - 1) {
+        ctx.fillText(String(i), padL + (i + 0.5) * cellW, barBot + 22);
+      }
+    }
+
+    // bracket showing currently-open window
+    let openStart = 0;
+    for (let i = 0; i < step; i++) {
+      if (schedule[i].end) openStart = i + 1;
+    }
+    if (step > openStart) {
+      const x0 = padL + openStart * cellW;
+      const x1 = padL + step * cellW;
+      ctx.strokeStyle = cssVar('--fg');
+      ctx.globalAlpha = 0.45;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 2, barTop - 12);
+      ctx.lineTo(x0 + 2, barTop - 18);
+      ctx.lineTo(x1 - 2, barTop - 18);
+      ctx.lineTo(x1 - 2, barTop - 12);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = cssVar('--muted');
+      ctx.font = 'italic 11px Charter, Georgia, serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('open episode', x0 + 4, barTop - 28);
+    }
+
+    // bottom note about buffer-end bootstrap
+    if (step === N) {
+      ctx.fillStyle = cssVar('--muted');
+      ctx.font = 'italic 11px Charter, Georgia, serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('buffer full → bootstrap from V(s_last)', w - padR, h - 8);
+    }
+  }
+
+  function frame() {
+    const now = performance.now();
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+
+    if (playing && step < N) {
+      step += dt / STEP_INTERVAL;
+      if (step > N) step = N;
+    }
+    stepV.textContent = String(Math.min(N, Math.floor(step)));
+
+    const [w, h] = fitCanvas();
+    draw(w, h);
+
+    requestAnimationFrame(frame);
+  }
+
+  playBtn.addEventListener('click', () => {
+    playing = !playing;
+    playBtn.textContent = playing ? 'Pause' : 'Play';
+    if (playing && step >= N) step = 0;
+  });
+  resetBtn.addEventListener('click', () => { step = 0; });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { /* cssVar read each frame */ });
+  window.addEventListener('resize', () => fitCanvas());
+
+  frame();
+
+  function postHeight() {
+    parent.postMessage({type: 'viz-height', height: document.body.scrollHeight}, '*');
+  }
+  window.addEventListener('load', postHeight);
+  new ResizeObserver(postHeight).observe(document.body);
+</script>
+</body>
+</html>
