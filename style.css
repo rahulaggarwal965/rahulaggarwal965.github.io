@@ -52,10 +52,22 @@ ul.post-list time { color: var(--muted); font-variant-numeric: tabular-nums; min
 .post-header time { color: var(--muted); font-size: 0.95rem; }
 
 img { max-width: 100%; height: auto; }
-.about-photo { float: right; width: 160px; border-radius: 50%; margin: 0.25rem 0 1rem 1.5rem; }
-@media (max-width: 480px) {
-  .about-photo { float: none; display: block; margin: 0 auto 1rem; width: 140px; }
+.about-photo {
+  float: right;
+  width: 220px;
+  border-radius: 4px;
+  margin: 0.25rem 0 1rem 1.5rem;
 }
+@media (max-width: 540px) {
+  .about-photo { float: none; display: block; margin: 0 auto 1rem; width: 220px; }
+}
+
+.site-sublink { margin: 0 0 2rem; }
+.site-sublink a { color: var(--link); }
+
+.page-footer { margin-top: 4rem; font-size: 0.95rem; }
+.page-footer a { color: var(--muted); }
+.page-footer a:hover { color: var(--link); }
 
 iframe {
   width: 100%;
