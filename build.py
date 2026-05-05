@@ -2,11 +2,14 @@
 """Build the static site: render posts/about.md → HTML, copy static assets to _site/."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
 
 import markdown
+
+INCLUDE_DRAFTS = os.environ.get("BUILD_DRAFTS") == "1"
 
 IFRAME_NEEDS_SCROLLING = re.compile(r"<iframe(?![^>]*\bscrolling=)", flags=re.IGNORECASE)
 
@@ -63,15 +66,10 @@ def md_to_html(md_path: Path) -> tuple[dict, str]:
     return meta, html
 
 
-def build_post(post_dir: Path) -> dict:
+def build_post(post_dir: Path) -> dict | None:
     slug = post_dir.name
     meta, html = md_to_html(post_dir / "index.md")
-    title = meta.get("title", slug)
-    date_str = meta.get("date", "")
-    header = f'<header class="post-header"><h1>{title}</h1>'
-    if date_str:
-        header += f"<time>{date_str}</time>"
-    header += "</header>\n"
+    is_draft = meta.get("draft", "").lower() in ("true", "yes", "1")
     out_dir = OUT / "posts" / slug
     out_dir.mkdir(parents=True, exist_ok=True)
     for item in post_dir.iterdir():
@@ -82,6 +80,14 @@ def build_post(post_dir: Path) -> dict:
             shutil.copytree(item, dst, dirs_exist_ok=True)
         else:
             shutil.copy2(item, dst)
+    if is_draft and not INCLUDE_DRAFTS:
+        return None
+    title = meta.get("title", slug)
+    date_str = meta.get("date", "")
+    header = f'<header class="post-header"><h1>{title}</h1>'
+    if date_str:
+        header += f"<time>{date_str}</time>"
+    header += "</header>\n"
     body = header + f'<article class="post">\n{html}\n</article>\n{BACK_LINK}'
     (out_dir / "index.html").write_text(render(f"{title} — {SITE_TITLE}", body))
     return {"slug": slug, "title": title, "date": date_str}
@@ -131,7 +137,9 @@ def main() -> None:
             if not d.is_dir() or d.name.startswith(("_", ".")):
                 continue
             if (d / "index.md").exists():
-                posts.append(build_post(d))
+                result = build_post(d)
+                if result is not None:
+                    posts.append(result)
     build_index(posts)
     build_about()
     print(f"Built {len(posts)} post(s) → {OUT.relative_to(ROOT)}/")
