@@ -1,6 +1,7 @@
 ---
 title: Multimodal SLAM for Legged Robots
 date: 2023-05-15
+draft: true
 ---
 
 *~30 min read. A walkthrough of [an undergrad project](paper.pdf) where I built a multimodal SLAM system for a quadruped.*
