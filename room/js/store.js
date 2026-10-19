@@ -4,7 +4,7 @@
 // signs in with a fine-grained GitHub token (Contents: read & write on this repo
 // only), kept in this browser's localStorage. Logging care commits the updated
 // log.json straight to the repo, so git history doubles as a plant diary.
-export const REPO = { owner: 'rahulaggarwal965', repo: 'rahulaggarwal965.github.io', branch: 'main', path: 'plants/log.json' };
+export const REPO = { owner: 'rahulaggarwal965', repo: 'rahulaggarwal965.github.io', branch: 'main', path: 'room/log.json' };
 
 const TOKEN_KEY = 'plants:gardener-token';
 const API = `https://api.github.com/repos/${REPO.owner}/${REPO.repo}`;

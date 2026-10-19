@@ -1,9 +1,9 @@
-# Plants page (`/plants/`)
+# Room page (`/room/`)
 
-A fullscreen pixel-art 3D model of my bedroom with the four plants in it, plus a watering tracker. Clicking a plant opens a sidebar (a bottom sheet on phones) with its care info. The only other control is the time-of-day slider in the corner. Plain ES modules + three.js from jsDelivr; `build.py` copies `plants/` to `_site/plants/` as-is.
+A fullscreen pixel-art 3D model of my bedroom with the four plants in it, plus a watering tracker. Clicking a plant opens a sidebar (a bottom sheet on phones) with its care info. The only other control is the time-of-day slider in the corner. Plain ES modules + three.js from jsDelivr; `build.py` copies `room/` to `_site/room/` as-is.
 
 ```
-plants/
+room/
 ├── index.html      page + styles
 ├── plants.json     the plants: names, care info, schedules, where they sit in the room
 ├── log.json        care events (written by the page, or by hand)
@@ -27,10 +27,10 @@ plants/
 Visitors only read. To water from the page:
 
 1. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new): repository access **only** `rahulaggarwal965.github.io`, permission **Contents → Read and write**, nothing else.
-2. On `/plants/`, click any plant, then **gardener sign-in** at the bottom of its sidebar, and paste it. It's stored in that browser's localStorage only.
+2. On `/room/`, click any plant, then **gardener sign-in** at the bottom of its sidebar, and paste it. It's stored in that browser's localStorage only.
 3. Select a plant: **Water**, **Still damp** (pushes the next check back a few days), **Fed**, **Note…**. The "When" menu backdates (e.g. "yesterday").
 
-Each action commits `plants/log.json` to `main` (message like `[plants] water monstera`), which redeploys the site in about a minute; the page updates immediately for me. An undo link shows for a few seconds after each action. Because these commits land on `main`, **`git pull` before pushing local changes.**
+Each action commits `room/log.json` to `main` (message like `[plants] water monstera`), which redeploys the site in about a minute; the page updates immediately for me. An undo link shows for a few seconds after each action. Because these commits land on `main`, **`git pull` before pushing local changes.**
 
 Anything served from `rahulaggarwal965.github.io` shares that localStorage, so keep the token scoped to this one repo with only Contents access.
 
@@ -53,9 +53,9 @@ If the weather can't be fetched (offline, blocked), everything falls back to the
 
 ## Handy links
 
-- `/plants/#monstera` opens with a plant selected (ids are in `plants.json`).
-- `/plants/?weather=rain` (or `fog`, `cloudy`, `clear`) previews the room in that weather.
-- `/plants/?hour=21` opens the room at 9pm. Otherwise the sun follows the real time in `America/Los_Angeles` (`CLOCK` in `place.js`); the slider scrubs through the day and **now** goes back to live.
+- `/room/#monstera` opens with a plant selected (ids are in `plants.json`).
+- `/room/?weather=rain` (or `fog`, `cloudy`, `clear`) previews the room in that weather.
+- `/room/?hour=21` opens the room at 9pm. Otherwise the sun follows the real time in `America/Los_Angeles` (`CLOCK` in `place.js`); the slider scrubs through the day and **now** goes back to live.
 - `window.__room` in the console exposes the scene, camera, wind, etc. for poking around.
 
 ## Local preview
@@ -63,4 +63,4 @@ If the weather can't be fetched (offline, blocked), everything falls back to the
 ```
 uv run python build.py && uv run python -m http.server -d _site 8000
 ```
-then open http://localhost:8000/plants/.
+then open http://localhost:8000/room/.

@@ -327,7 +327,7 @@ async function main() {
   refreshWeather();
   setInterval(refreshWeather, 15 * 60 * 1000);
 
-  // /plants/#monstera opens with that plant selected
+  // /room/#monstera opens with that plant selected
   const linked = state.plants.find((p) => p.def.id === decodeURIComponent(location.hash.slice(1)));
   if (linked) select(linked);
 }

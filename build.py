@@ -110,7 +110,7 @@ def build_index(posts: list[dict]) -> None:
     )
     body = (
         f"<h1>{INDEX_HEADING}</h1>\n"
-        '<p class="site-sublink"><a href="/about.html">about</a> · <a href="/plants/">plants</a></p>\n'
+        '<p class="site-sublink"><a href="/about.html">about</a> · <a href="/room/">my room</a></p>\n'
         "<h2>Posts</h2>\n"
         f'<ul class="post-list">\n{items}\n</ul>\n'
     )
@@ -121,7 +121,7 @@ def main() -> None:
     if OUT.exists():
         shutil.rmtree(OUT)
     OUT.mkdir()
-    for name in ("style.css", "images", "plants"):
+    for name in ("style.css", "images", "room"):
         src = ROOT / name
         if not src.exists():
             continue
