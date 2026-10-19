@@ -1,0 +1,95 @@
+{
+  "plants": [
+    {
+      "id": "bird-of-paradise",
+      "name": "White Bird of Paradise",
+      "short": "Bird of paradise",
+      "latin": "Strelitzia nicolai",
+      "spot": "Floor, left side of the bay window",
+      "model": "strelitzia",
+      "position": [-0.62, 0, -1.82],
+      "stand": 0,
+      "water": {
+        "every": { "growing": 8, "rest": 14 },
+        "snooze": 3,
+        "when": "When the top 2 inches of soil are dry. Soak until water runs out the bottom, then empty the saucer."
+      },
+      "light": "Bright, with a few hours of direct sun. The bay window is about as good as it gets indoors.",
+      "feed": { "every": 30, "months": [3, 4, 5, 6, 7, 8, 9], "what": "Balanced liquid fertilizer at half strength." },
+      "notes": [
+        "Splits in the leaves are normal. In the wild they tear so the wind passes through.",
+        "Wipe the leaves every few weeks; dust on leaves this big blocks a lot of light.",
+        "There's a new leaf unfurling from the middle."
+      ],
+      "id_note": "Straight from the nursery tag in the pot."
+    },
+    {
+      "id": "monstera",
+      "name": "Monstera",
+      "short": "Monstera",
+      "latin": "Monstera deliciosa",
+      "spot": "Floor, in front of the bike",
+      "model": "monstera",
+      "position": [0.15, 0, -1.72],
+      "stand": 0,
+      "water": {
+        "every": { "growing": 7, "rest": 12 },
+        "snooze": 2,
+        "when": "When the top third of the pot is dry. The chunky bark and clay-ball mix drains fast, so it may want water a little sooner than you'd guess."
+      },
+      "light": "Bright but indirect. Afternoon sun through the bay is strong; pale, washed-out leaves mean it's getting too much.",
+      "feed": { "every": 30, "months": [3, 4, 5, 6, 7, 8, 9], "what": "Balanced liquid fertilizer. Chunky mixes hold few nutrients, so don't skip it in summer." },
+      "notes": [
+        "It's leggy and reaching. A moss pole to climb would get you bigger, more split leaves.",
+        "Snip off the dried-out stem in the middle.",
+        "The aerial roots can be tucked into the pot or left alone."
+      ],
+      "id_note": "Juvenile leaves with edge splits and holes, plus aerial roots: Monstera deliciosa."
+    },
+    {
+      "id": "philodendron",
+      "name": "Philodendron 'Rojo Congo'",
+      "short": "Philodendron",
+      "latin": "Philodendron 'Rojo Congo'",
+      "spot": "Desk, next to the monitor",
+      "model": "philodendron",
+      "position": [1.47, 0.75, 0.14],
+      "stand": 0,
+      "water": {
+        "every": { "growing": 7, "rest": 12 },
+        "snooze": 2,
+        "when": "When the top inch or two of soil is dry."
+      },
+      "light": "Medium to bright indirect light. The desk works; rotate it every couple of weeks so it doesn't lean toward the window.",
+      "feed": { "every": 30, "months": [3, 4, 5, 6, 7, 8, 9], "what": "Balanced liquid fertilizer at half strength." },
+      "notes": [
+        "New leaves come in red and darken to green. That's normal.",
+        "Yellowing lower leaves usually mean too much water."
+      ],
+      "id_note": "A philodendron, yes: a self-heading hybrid with dark purple-red stems and leaves that open red. Most likely 'Rojo Congo'. Its parent 'Imperial Red' looks very similar, but Rojo Congo's leaves are broader and its stems darker, which matches this one."
+    },
+    {
+      "id": "snake-plant",
+      "name": "Snake plant 'Samurai Dwarf'",
+      "short": "Snake plant",
+      "latin": "Sansevieria ehrenbergii 'Samurai Dwarf'",
+      "spot": "Desk, next to the fan",
+      "model": "sansevieria",
+      "position": [1.36, 0.75, -0.76],
+      "stand": 0,
+      "water": {
+        "every": { "growing": 18, "rest": 30 },
+        "snooze": 5,
+        "when": "Only when the soil is completely dry, all the way down. In winter, about once a month."
+      },
+      "light": "Anything from medium to bright. More light brings out the red on the leaf edges.",
+      "feed": { "every": 60, "months": [4, 5, 6, 7, 8], "what": "Cactus fertilizer at half strength, or skip it entirely." },
+      "notes": [
+        "The terracotta pot and gritty bark-and-perlite mix are exactly right. They dry out fast.",
+        "Overwatering is about the only way to kill it. When in doubt, wait a week.",
+        "Papery brown leaf tips are normal for this one."
+      ],
+      "id_note": "Short, thick, V-folded leaves in a rosette with red-brown edges: a dwarf snake plant sold as Sansevieria 'Samurai Dwarf' (snake plants have since been moved into Dracaena, so it's also labelled Dracaena 'Samurai')."
+    }
+  ]
+}
