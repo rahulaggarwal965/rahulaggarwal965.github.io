@@ -223,6 +223,14 @@ const lanternTex = texture(4, 16, (g) => {
   for (let y = 1; y < 16; y += 2) g.fillRect(0, y, 4, 1);
 }, { repeat: true });
 lanternTex.repeat.set(6, 1);
+// Lit from inside, the paper glows and the bamboo ribs show up as dark bands.
+const lanternGlowTex = texture(4, 24, (g) => {
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, 4, 24);
+  g.fillStyle = '#8c8c8c';
+  for (let y = 2; y < 24; y += 3) g.fillRect(0, y, 4, 1);
+}, { repeat: true });
+lanternGlowTex.repeat.set(6, 1);
 
 // Rain outside the windows: short pixel streaks, scrolled down the glass.
 const rainTex = texture(16, 32, (g) => {
@@ -770,7 +778,7 @@ function buildLantern(root, lamps) {
   const { H } = ROOM;
   const x = -0.53, z = -0.7, r = 0.22, cy = 2.08;
   const cord = toon(C.white);
-  const mat = toon(0xffffff, { map: lanternTex, emissive: 0xff7a1c, emissiveIntensity: 0 }); // a deep orange bulb
+  const mat = toon(0xffffff, { map: lanternTex, emissive: 0xff6a12, emissiveMap: lanternGlowTex, emissiveIntensity: 0 }); // a deep orange bulb
   const globe = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), mat);
   globe.position.set(x, cy, z);
   globe.scale.y = 0.94;
@@ -786,7 +794,7 @@ function buildLantern(root, lamps) {
   rod(root, [ROOM.xMin + 0.02, BEAM.bottom - 0.01, cz], [ROOM.xMin + 0.02, 0.2, cz], 0.004, cord);
   box(root, [0.025, 0.07, 0.025], [ROOM.xMin + 0.025, 1.12, cz], cord);
   // lit from inside, the paper itself turns orange rather than white
-  lamps.push({ pos: new THREE.Vector3(x, cy, z), mat, color: 0xff6a12, paper: 0x8a3a0e });
+  lamps.push({ pos: new THREE.Vector3(x, cy, z), mat, color: 0xff6a12, paper: 0x8a3a0e, glow: 1.8 });
 }
 
 // The bamboo plant stand in the bay's left corner: three round white trays at
