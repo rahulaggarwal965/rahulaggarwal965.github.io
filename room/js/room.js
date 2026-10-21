@@ -10,9 +10,10 @@ import { toon, box, cyl, rod, texture, rng } from './util.js';
 
 export const ROOM = { xMin: -1.675, xMax: 1.675, zMin: -1.41, zMax: 1.41, H: 2.6, T: 0.14 };
 // Opening in the north wall from x = left..right; the window wall sits `depth` out
-// from it, spanning back[0]..back[1]. The sides are angled at about 45°; the right
-// one starts almost in the corner by the desk.
-export const BAY = { left: -1.35, right: 1.62, back: [-0.4, 0.62], depth: 1.05, sill: 0.36, head: 2.0, ceil: 2.22 };
+// from it, spanning back[0]..back[1]. On the left a straight return runs `ret` back
+// from the opening before the side turns 45°; the right side is angled from the
+// corner by the desk.
+export const BAY = { left: -0.92, ret: 0.45, right: 1.62, back: [-0.37, 0.62], depth: 1.05, sill: 0.36, head: 2.0, ceil: 2.22 };
 // Heights on the double-hung windows: meeting rail, top of the upper sash, blinds.
 const SASH = { meet: 1.18, headRail: 1.72, blinds: 2.02 };
 export const BEAM = { bottom: 2.25, depth: 0.3 };
@@ -214,6 +215,15 @@ const paintingTex = texture(8, 12, (g) => {
   g.fillRect(2, 2, 1, 1); g.fillRect(5, 3, 1, 1);
 });
 
+// Rice-paper lantern: horizontal ribs.
+const lanternTex = texture(4, 16, (g) => {
+  g.fillStyle = '#f6f4ee';
+  g.fillRect(0, 0, 4, 16);
+  g.fillStyle = '#dedad0';
+  for (let y = 1; y < 16; y += 2) g.fillRect(0, y, 4, 1);
+}, { repeat: true });
+lanternTex.repeat.set(6, 1);
+
 // Rain outside the windows: short pixel streaks, scrolled down the glass.
 const rainTex = texture(16, 32, (g) => {
   const R = rng(29);
@@ -304,12 +314,26 @@ function buildWalls(root, hidden) {
     wallBox(root, [xMax - ALCOVE.x0 + 2 * T, H, T], [(ALCOVE.x0 - T + xMax + T) / 2, 0, zA + T / 2]),
   ], southDecor);
 
+  // the thrifted painting, hung on the pier between the headboard and the bay
+  const northDecor = [];
+  const art = new THREE.Group();
+  art.position.set(-1.27, 1.62, zMin);
+  root.add(art);
+  northDecor.push(
+    box(art, [0.33, 0.47, 0.035], [0, -0.235, 0.0175], toon(0x3a2216)),
+    box(art, [0.27, 0.41, 0.006], [0, -0.205, 0.036], toon(0xd9c7a0), { cast: false }),
+  );
+  const canvas = new THREE.Mesh(new THREE.PlaneGeometry(0.21, 0.35), toon(0xffffff, { map: paintingTex }));
+  canvas.position.set(0, 0, 0.04);
+  art.add(canvas);
+  northDecor.push(canvas);
+
   // north wall: a pier either side of the bay opening, and the header above it
   add('north', [0, 0, 1], [
     wallBox(root, [BAY.left - xMin + T, H, T], [(xMin - T + BAY.left) / 2, 0, zMin - T / 2]),
     wallBox(root, [xMax + T - BAY.right, H, T], [(BAY.right + xMax + T) / 2, 0, zMin - T / 2]),
     wallBox(root, [BAY.right - BAY.left, H - BAY.ceil, T], [(BAY.left + BAY.right) / 2, BAY.ceil, zMin - T / 2]),
-  ]);
+  ], northDecor);
 
   // Invisible ceilings: the camera looks in from above, but sunlight should
   // still only get in through the windows.
@@ -343,7 +367,7 @@ function buildFloor(root) {
     [xMin - T, zMax + T], [ALCOVE.x0 - T, zMax + T], [ALCOVE.x0 - T, zA + T], [xMax + T, zA + T],
     [xMax + T, zMin - T], [BAY.right + 0.07, zMin - T],
     [BAY.back[1] + 0.09, zb - 0.13], [BAY.back[0] - 0.09, zb - 0.13],
-    [BAY.left - 0.07, zMin - T], [xMin - T, zMin - T],
+    [BAY.left - 0.09, zMin - BAY.ret - 0.04], [BAY.left - 0.09, zMin - T], [xMin - T, zMin - T],
   ];
   const shape = new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, -z)));
   const depth = 0.32;
@@ -361,8 +385,9 @@ function buildFloor(root) {
 // along each face (metres from its left end). The left one is open.
 const ZB = ROOM.zMin - BAY.depth;
 const BAY_FACES = [
-  { a: [BAY.left, ROOM.zMin], b: [BAY.back[0], ZB], win: [0.57, 1.32], open: true },
-  { a: [BAY.back[0], ZB], b: [BAY.back[1], ZB], win: [0.1, 0.92] },
+  { a: [BAY.left, ROOM.zMin], b: [BAY.left, ROOM.zMin - BAY.ret], win: null },
+  { a: [BAY.left, ROOM.zMin - BAY.ret], b: [BAY.back[0], ZB], win: [0.04, 0.78], open: true },
+  { a: [BAY.back[0], ZB], b: [BAY.back[1], ZB], win: [0.1, 0.91] },
   { a: [BAY.back[1], ZB], b: [BAY.right, ROOM.zMin], win: [0.08, 0.83] },
 ];
 
@@ -380,6 +405,10 @@ function buildBay(root, ctx) {
     g.rotation.y = Math.atan2(-dz / w, dx / w);
     root.add(g);
     g.updateMatrixWorld();
+    if (!f.win) {
+      box(g, [w, BAY.ceil, 0.17], [0, 0, -0.025], wallMat);
+      return;
+    }
 
     const [wa, wb] = f.win;
     const ow = wb - wa;                 // window width
@@ -469,10 +498,10 @@ function buildBay(root, ctx) {
 function lamp(parent, x, y, z, lamps) {
   cyl(parent, [0.05, 0.055, 0.3], [x, y, z], toon(0xffffff, { map: ridgeTex }), { seg: 12 });
   rod(parent, [x, y + 0.3, z], [x, y + 0.42, z], 0.008, toon(C.silver));
-  const shadeMat = toon(0xefe9dc, { side: THREE.DoubleSide, emissive: 0xffc27a, emissiveIntensity: 0 });
+  const shadeMat = toon(0xefe9dc, { side: THREE.DoubleSide, emissive: 0xffb466, emissiveIntensity: 0 });
   cyl(parent, [0.15, 0.165, 0.21], [x, y + 0.3, z], shadeMat, { seg: 14, open: true });
   cyl(parent, [0.012, 0.012, 0.03], [x, y + 0.51, z], toon(C.silver), { seg: 6 });
-  lamps.push({ pos: new THREE.Vector3(x, y + 0.4, z), mat: shadeMat });
+  lamps.push({ pos: new THREE.Vector3(x, y + 0.4, z), mat: shadeMat, color: 0xffa456 });
 }
 
 function buildBed(root) {
@@ -494,8 +523,8 @@ function buildBed(root) {
 
   // headboard: three upholstered channels
   const hb = toon(0x4b4f56);
-  box(g, [0.07, 0.55, wid + 0.12], [ROOM.xMin + 0.035, 0.05, cz], hb);
-  for (const [y, h] of [[0.6, 0.2], [0.81, 0.2], [1.02, 0.2]]) box(g, [0.085, h, wid + 0.12], [ROOM.xMin + 0.043, y, cz], hb);
+  box(g, [0.07, 0.48, wid + 0.12], [ROOM.xMin + 0.035, 0.05, cz], hb);
+  for (const [y, h] of [[0.53, 0.15], [0.69, 0.15], [0.85, 0.15]]) box(g, [0.085, h, wid + 0.12], [ROOM.xMin + 0.043, y, cz], hb);
 
   // pillows
   const pillow = toon(C.sheet);
@@ -601,7 +630,7 @@ function buildDesk(root, lamps, ctx) {
   lamp(root, 1.55, top, 0.52, lamps);
 }
 
-// Leaning by the closet: the skateboard, a thrifted painting, and the backpack.
+// Leaning by the closet: the skateboard and the backpack.
 function buildCorner(root) {
   const z = ROOM.zMax;
   const deck = new THREE.Group();
@@ -615,16 +644,6 @@ function buildCorner(root) {
     box(deck, [0.14, 0.025, 0.05], [0, y, 0.035], toon(C.silver));
     for (const s of [-1, 1]) cyl(deck, [0.027, 0.027, 0.03], [s * 0.085, y - 0.01, 0.06], toon(0xd9cdb3), { rot: [0, 0, Math.PI / 2], seg: 8 });
   }
-
-  const art = new THREE.Group();
-  art.position.set(0.5, 0, z - 0.1);
-  art.rotation.set(0.2, 0.15, 0);
-  root.add(art);
-  box(art, [0.36, 0.5, 0.035], [0, 0, 0], toon(0x4a2c1a));
-  const canvas = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.4), toon(0xffffff, { map: paintingTex }));
-  canvas.position.set(0, 0.25, -0.019);
-  canvas.rotation.y = Math.PI;
-  art.add(canvas);
 
   const pack = new THREE.Group();
   pack.position.set(0.12, 0, z - 0.32);
@@ -745,6 +764,57 @@ function buildMirror(root, ctx) {
   ctx.mirrorGlass = glass; // mirror.js turns this into a real reflection
 }
 
+// A paper globe lantern hung from a ceiling hook over the bed; its cord runs
+// across the ceiling to the corner by the bay and down the wall.
+function buildLantern(root, lamps) {
+  const { H } = ROOM;
+  const x = -0.53, z = -0.7, r = 0.22, cy = 2.08;
+  const cord = toon(C.white);
+  const mat = toon(0xffffff, { map: lanternTex, emissive: 0xff7a1c, emissiveIntensity: 0 }); // a deep orange bulb
+  const globe = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), mat);
+  globe.position.set(x, cy, z);
+  globe.scale.y = 0.94;
+  globe.castShadow = globe.receiveShadow = true;
+  root.add(globe);
+  cyl(root, [0.05, 0.05, 0.01], [x, cy - r * 0.94 - 0.005, z], toon(C.silver), { seg: 8 });
+  box(root, [0.05, 0.01, 0.05], [x, H - 0.01, z], cord);
+  rod(root, [x, H - 0.01, z], [x, cy + r * 0.9, z], 0.005, cord);
+  const cx = ROOM.xMin + BEAM.depth + 0.02, cz = ROOM.zMin + 0.03;
+  rod(root, [x, H - 0.02, z], [cx, H - 0.03, cz], 0.004, cord);
+  rod(root, [cx, H - 0.03, cz], [cx, BEAM.bottom - 0.01, cz], 0.004, cord);
+  rod(root, [cx, BEAM.bottom - 0.01, cz], [ROOM.xMin + 0.02, BEAM.bottom - 0.01, cz], 0.004, cord);
+  rod(root, [ROOM.xMin + 0.02, BEAM.bottom - 0.01, cz], [ROOM.xMin + 0.02, 0.2, cz], 0.004, cord);
+  box(root, [0.025, 0.07, 0.025], [ROOM.xMin + 0.025, 1.12, cz], cord);
+  // lit from inside, the paper itself turns orange rather than white
+  lamps.push({ pos: new THREE.Vector3(x, cy, z), mat, color: 0xff6a12, paper: 0x8a3a0e });
+}
+
+// The bamboo plant stand in the bay's left corner: three round white trays at
+// different heights. Plant positions in plants.json sit on these trays.
+export const PLANT_STAND = [
+  { x: -0.43, z: -1.6, y: 0.71, r: 0.13 }, // snake plant
+  { x: -0.74, z: -1.58, y: 0.49, r: 0.14 }, // monstera
+  { x: -0.22, z: -1.74, y: 0.08, r: 0.17 }, // bird of paradise
+];
+
+function buildPlantStand(root) {
+  const bamboo = toon(0xd2a96a), tray = toon(0xf1f0eb);
+  for (const t of PLANT_STAND) {
+    const legR = t.r * 0.72;
+    for (let i = 0; i < 3; i++) {
+      const a = i * (Math.PI * 2 / 3) + 0.5;
+      const lx = t.x + legR * Math.cos(a), lz = t.z + legR * Math.sin(a);
+      cyl(root, [0.012, 0.012, t.y - 0.02], [lx, 0, lz], bamboo, { seg: 6 });
+    }
+    if (t.y > 0.3) {
+      // a bamboo ring partway down holds the legs together
+      cyl(root, [legR + 0.01, legR + 0.01, 0.02], [t.x, t.y * 0.32, t.z], bamboo, { seg: 12, open: true });
+    }
+    cyl(root, [t.r, t.r * 0.96, 0.03], [t.x, t.y - 0.03, t.z], tray, { seg: 16 });
+    cyl(root, [t.r + 0.004, t.r + 0.004, 0.012], [t.x, t.y, t.z], tray, { seg: 16, open: true });
+  }
+}
+
 // --------------------------------------------------------------------- all
 
 export function buildRoom() {
@@ -771,6 +841,8 @@ export function buildRoom() {
   buildDesk(root, ctx.lamps, ctx);
   buildChair(root);
   buildCorner(root);
+  buildLantern(root, ctx.lamps);
+  buildPlantStand(root);
   buildBike(root, hidden);
   buildMirror(root, ctx);
   hidden.push(...ctx.overlays);

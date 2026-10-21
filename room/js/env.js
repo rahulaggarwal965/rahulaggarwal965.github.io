@@ -200,10 +200,10 @@ export class Environment {
     scene.add(this.hemi, this.sun, this.sun.target);
 
     this.lamps = room.lamps.map((l) => {
-      const p = new THREE.PointLight(0xffb46b, 0, 5, 1.4);
+      const p = new THREE.PointLight(l.color, 0, 5, 1.4);
       p.position.copy(l.pos);
       scene.add(p);
-      return { light: p, mat: l.mat };
+      return { light: p, mat: l.mat, day: l.mat.color.clone(), paper: l.paper != null ? new THREE.Color(l.paper) : null };
     });
     this.screenLight = new THREE.PointLight(0x7fa6ff, 0, 1.6, 1.5);
     this.screenLight.position.copy(room.screenPos);
@@ -248,6 +248,7 @@ export class Environment {
     for (const l of this.lamps) {
       l.light.intensity = 3.2 * on;
       l.mat.emissiveIntensity = 0.85 * on;
+      if (l.paper) l.mat.color.copy(l.day).lerp(l.paper, on);
     }
     this.screenLight.intensity = 0.9 * on;
 

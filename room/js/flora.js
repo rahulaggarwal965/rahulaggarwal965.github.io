@@ -176,10 +176,11 @@ const PROFILES = {
 };
 
 function strelitzia(plant, R) {
-  const soil = pot(plant, { rTop: 0.2, rBot: 0.155, h: 0.33, color: 0xb0613a, soil: soilTex('bark', 2) });
+  const soil = pot(plant, { rTop: 0.165, rBot: 0.13, h: 0.3, color: 0xb0613a, soil: soilTex('bark', 2) });
   const sheath = cyl(plant.group, [0.04, 0.07, 0.17], [0, soil, 0], toon(0x8c9a78), { seg: 7 });
   plant.meshes.push(sheath);
-  // [azimuth, tilt, petiole, leaf length, leaf width, droop, splits]
+  // [azimuth, tilt, petiole, leaf length, leaf width, droop, splits]; petioles are
+  // scaled below so the tallest leaf tops out around 1.3 m, as in the photos
   const fan = [
     [1.5, 0.48, 0.5, 0.48, 0.19, 1.0, 2],
     [-1.7, 0.42, 0.58, 0.5, 0.2, 0.9, 1],
@@ -192,7 +193,7 @@ function strelitzia(plant, R) {
   fan.forEach(([az, tilt, len, ll, lw, droop, nSplit], i) => {
     const splits = Array.from({ length: nSplit }, () => ({ u: 0.25 + R() * 0.6, s: R() < 0.5 ? -1 : 1 }));
     frond(plant, {
-      at: [0, soil + 0.1, 0], azimuth: az + (R() - 0.5) * 0.2, tilt, len, arch: 0.15, radius: 0.014, stem: 0x8a9878,
+      at: [0, soil + 0.1, 0], azimuth: az + (R() - 0.5) * 0.2, tilt, len: len * 0.62, arch: 0.15, radius: 0.014, stem: 0x8a9878,
       leaf: {
         length: ll, width: lw, profile: PROFILES.paddle, segU: 24, segV: 8, fold: 0.18, curl: droop,
         color: 0x34532f, rib: 0xa9b585,
@@ -202,7 +203,7 @@ function strelitzia(plant, R) {
     });
   });
   // the new leaf still rolled up into a spike
-  frond(plant, { at: [0.01, soil + 0.1, 0], azimuth: 0.6, tilt: 0.05, len: 1.0, arch: 0, radius: 0.02, stem: 0x7f8f6d, flex: 0.5, freq: 1.2, phase: 0.4 });
+  frond(plant, { at: [0.01, soil + 0.1, 0], azimuth: 0.6, tilt: 0.05, len: 0.7, arch: 0, radius: 0.02, stem: 0x7f8f6d, flex: 0.5, freq: 1.2, phase: 0.4 });
 }
 
 function monstera(plant, R) {

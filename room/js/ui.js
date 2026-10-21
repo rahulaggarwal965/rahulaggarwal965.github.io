@@ -95,11 +95,21 @@ export class UI {
   }
 
   positionTags(project) {
-    for (const p of this.s.plants) {
-      const b = this.tags.get(p.def.id);
-      const pt = project(p.top);
+    // plants that stand together (the stand) can put tags on top of each other;
+    // stack any that overlap, the higher plant's tag on top
+    const placed = [];
+    const items = this.s.plants.map((p) => ({ b: this.tags.get(p.def.id), pt: project(p.top) }))
+      .sort((a, c) => (a.pt?.y ?? 0) - (c.pt?.y ?? 0));
+    for (const { b, pt } of items) {
       b.style.visibility = pt ? 'visible' : 'hidden';
-      if (pt) b.style.transform = `translate(${Math.round(pt.x)}px, ${Math.round(pt.y)}px) translate(-50%, -100%)`;
+      if (!pt) continue;
+      const w = b.offsetWidth, h = b.offsetHeight;
+      let y = pt.y;
+      for (const q of placed) {
+        if (Math.abs(q.x - pt.x) < (w + q.w) / 2 + 4 && y > q.y - h - 2 && y - h < q.y + 2) y = q.y + h + 2;
+      }
+      placed.push({ x: pt.x, y, w });
+      b.style.transform = `translate(${Math.round(pt.x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
     }
   }
 
