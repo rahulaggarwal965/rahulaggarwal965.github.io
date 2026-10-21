@@ -216,21 +216,34 @@ const paintingTex = texture(8, 12, (g) => {
 });
 
 // Rice-paper lantern: horizontal ribs.
-const lanternTex = texture(4, 16, (g) => {
+const lanternTex = texture(4, 32, (g) => {
   g.fillStyle = '#f6f4ee';
-  g.fillRect(0, 0, 4, 16);
-  g.fillStyle = '#dedad0';
-  for (let y = 1; y < 16; y += 2) g.fillRect(0, y, 4, 1);
+  g.fillRect(0, 0, 4, 32);
+  g.fillStyle = '#ebe7de';
+  g.fillRect(0, 0, 1, 32); // faint vertical seam between paper panels
+  g.fillStyle = '#d6d1c4';
+  for (let y = 3; y < 32; y += 4) g.fillRect(0, y, 4, 1);
 }, { repeat: true });
 lanternTex.repeat.set(6, 1);
 // Lit from inside, the paper glows and the bamboo ribs show up as dark bands.
-const lanternGlowTex = texture(4, 24, (g) => {
+const lanternGlowTex = texture(4, 32, (g) => {
   g.fillStyle = '#ffffff';
-  g.fillRect(0, 0, 4, 24);
-  g.fillStyle = '#8c8c8c';
-  for (let y = 2; y < 24; y += 3) g.fillRect(0, y, 4, 1);
+  g.fillRect(0, 0, 4, 32);
+  g.fillStyle = '#e2e2e2';
+  g.fillRect(0, 0, 1, 32);
+  g.fillStyle = '#b8b8b8';
+  for (let y = 3; y < 32; y += 4) g.fillRect(0, y, 4, 1);
 }, { repeat: true });
 lanternGlowTex.repeat.set(6, 1);
+// Soft light around the lantern at night, drawn as a camera-facing halo.
+const haloTex = texture(32, 32, (g) => {
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 32);
+});
 
 // Rain outside the windows: short pixel streaks, scrolled down the glass.
 const rainTex = texture(16, 32, (g) => {
@@ -784,6 +797,19 @@ function buildLantern(root, lamps) {
   globe.scale.y = 0.94;
   globe.castShadow = globe.receiveShadow = true;
   root.add(globe);
+  // The bulb sits in the middle, so the paper facing you glows hardest and the
+  // rim, where you look through more paper, stays darker (in a few flat steps).
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      {
+        vec3 vd = isOrthographic ? vec3(0.0, 0.0, 1.0) : normalize(vViewPosition);
+        float f = floor(pow(clamp(dot(normal, vd), 0.0, 1.0), 1.4) * 4.0) / 4.0;
+        totalEmissiveRadiance *= mix(0.3, 1.9, f);
+      }`);
+  };
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: 0xffa860, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.position.set(x, cy, z);
+  halo.scale.setScalar(r * 7); // env.js puts it in the effects scene, with the dust motes
   cyl(root, [0.05, 0.05, 0.01], [x, cy - r * 0.94 - 0.005, z], toon(C.silver), { seg: 8 });
   box(root, [0.05, 0.01, 0.05], [x, H - 0.01, z], cord);
   rod(root, [x, H - 0.01, z], [x, cy + r * 0.9, z], 0.005, cord);
@@ -794,7 +820,7 @@ function buildLantern(root, lamps) {
   rod(root, [ROOM.xMin + 0.02, BEAM.bottom - 0.01, cz], [ROOM.xMin + 0.02, 0.2, cz], 0.004, cord);
   box(root, [0.025, 0.07, 0.025], [ROOM.xMin + 0.025, 1.12, cz], cord);
   // lit from inside, the paper itself turns orange rather than white
-  lamps.push({ pos: new THREE.Vector3(x, cy, z), mat, color: 0xff6a12, paper: 0x8a3a0e, glow: 1.8 });
+  lamps.push({ pos: new THREE.Vector3(x, cy, z), mat, color: 0xff6a12, paper: 0x8a3a0e, glow: 1.8, power: 1.8, halo });
 }
 
 // The bamboo plant stand in the bay's left corner: three round white trays at

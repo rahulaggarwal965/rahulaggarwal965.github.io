@@ -203,7 +203,8 @@ export class Environment {
       const p = new THREE.PointLight(l.color, 0, 5, 1.4);
       p.position.copy(l.pos);
       scene.add(p);
-      return { light: p, mat: l.mat, day: l.mat.color.clone(), paper: l.paper != null ? new THREE.Color(l.paper) : null, glow: l.glow ?? 1 };
+      if (l.halo) fxScene.add(l.halo);
+      return { light: p, mat: l.mat, day: l.mat.color.clone(), paper: l.paper != null ? new THREE.Color(l.paper) : null, glow: l.glow ?? 1, power: l.power ?? 1, halo: l.halo ?? null };
     });
     this.screenLight = new THREE.PointLight(0x7fa6ff, 0, 1.6, 1.5);
     this.screenLight.position.copy(room.screenPos);
@@ -246,7 +247,8 @@ export class Environment {
     this.hemi.intensity = lerp(1.35, 2.7, day) * (1 - 0.15 * grey);
 
     for (const l of this.lamps) {
-      l.light.intensity = 3.2 * on;
+      l.light.intensity = 3.2 * on * l.power;
+      if (l.halo) l.halo.material.opacity = 0.9 * on;
       l.mat.emissiveIntensity = 0.85 * on * l.glow;
       if (l.paper) l.mat.color.copy(l.day).lerp(l.paper, on);
     }
