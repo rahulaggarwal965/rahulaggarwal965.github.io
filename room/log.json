@@ -1,5 +1,6 @@
 {
   "events": [
-    {"id":"08f3qn","plant":"monstera","type":"water","at":"2026-10-21T19:35:44.562Z"}
+    {"id":"08f3qn","plant":"monstera","type":"water","at":"2026-10-21T19:35:44.562Z"},
+    {"id":"ejxzxt","plant":"bird-of-paradise","type":"water","at":"2026-10-21T19:43:44.129Z"}
   ]
 }
