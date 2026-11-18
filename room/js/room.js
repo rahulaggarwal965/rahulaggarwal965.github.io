@@ -575,8 +575,6 @@ function buildNightstand(root, lamps) {
   cyl(root, [0.036, 0.036, 0.23], [x + 0.08, 0.61, z - 0.05], toon(C.white));
   cyl(root, [0.026, 0.03, 0.045], [x + 0.08, 0.84, z - 0.05], toon(C.charcoal));
   box(root, [0.075, 0.01, 0.15], [x + 0.1, 0.61, z - 0.18], toon(C.black), { rot: [0, 0.3, 0] });
-  // foam roller standing beside it
-  cyl(root, [0.075, 0.075, 0.45], [ROOM.xMin + 0.12, 0, z + 0.47], toon(C.charcoal));
 }
 
 function buildDesk(root, lamps, ctx) {
@@ -651,21 +649,9 @@ function buildDesk(root, lamps, ctx) {
   lamp(root, 1.55, top, 0.52, lamps);
 }
 
-// Leaning by the closet: the skateboard and the backpack.
+// The backpack by the closet.
 function buildCorner(root) {
   const z = ROOM.zMax;
-  const deck = new THREE.Group();
-  deck.position.set(0.77, 0, z - 0.06);
-  deck.rotation.x = 0.13;
-  root.add(deck);
-  box(deck, [0.2, 0.78, 0.014], [0, 0.02, 0], toon(0x1b1b1e));
-  box(deck, [0.2, 0.05, 0.016], [0, 0.76, 0], toon(0x8a5a33));
-  box(deck, [0.07, 0.07, 0.003], [0, 0.32, -0.008], toon(0xdedede));
-  for (const y of [0.15, 0.62]) {
-    box(deck, [0.14, 0.025, 0.05], [0, y, 0.035], toon(C.silver));
-    for (const s of [-1, 1]) cyl(deck, [0.027, 0.027, 0.03], [s * 0.085, y - 0.01, 0.06], toon(0xd9cdb3), { rot: [0, 0, Math.PI / 2], seg: 8 });
-  }
-
   const pack = new THREE.Group();
   pack.position.set(0.12, 0, z - 0.32);
   pack.rotation.y = 0.5;

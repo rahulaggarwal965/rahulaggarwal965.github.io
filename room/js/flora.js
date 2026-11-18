@@ -9,7 +9,7 @@ const X = new THREE.Vector3(1, 0, 0);
 
 // ------------------------------------------------------------------ leaves
 
-function blade({ length, width, profile, u0 = 0, segU = 12, segV = 8, fold = 0, cup = 0, curl = 0, keep, color, rib, edge }) {
+function blade({ length, width, profile, u0 = 0, segU = 12, segV = 8, fold = 0, cup = 0, curl = 0, keep, color, rib, edge, tip }) {
   const vs = new Set();
   for (let j = 0; j <= segV; j++) vs.add(+(-1 + (2 * j) / segV).toFixed(4));
   if (rib) [-0.075, -0.05, 0, 0.05, 0.075].forEach((v) => vs.add(v));
@@ -20,6 +20,7 @@ function blade({ length, width, profile, u0 = 0, segU = 12, segV = 8, fold = 0, 
   const base = new THREE.Color(color);
   const ribC = rib && new THREE.Color(rib);
   const edgeC = edge && new THREE.Color(edge);
+  const tipC = tip && new THREE.Color(tip);
   const c = new THREE.Color();
   const pos = [], col = [], idx = [];
 
@@ -40,6 +41,7 @@ function blade({ length, width, profile, u0 = 0, segU = 12, segV = 8, fold = 0, 
       c.copy(base);
       if (ribC && Math.abs(v) < 0.06 && u > 0.03) c.copy(ribC);
       if (edgeC && Math.abs(v) > 0.83) c.copy(edgeC);
+      if (tipC && u > 0.86) c.copy(tipC);
       c.multiplyScalar(0.82 + 0.18 * smoothstep(0, 0.45, u));
       col.push(c.r, c.g, c.b);
     }
@@ -172,6 +174,7 @@ const PROFILES = {
     const t = (0.18 - u) / 0.26;
     return Math.sqrt(Math.max(0, 1 - t * t));
   },
+  strap: (u) => Math.pow(1 - u, 0.45) * (0.55 + 0.45 * smoothstep(0, 0.18, u)),
   sword: (u) => Math.pow(1 - u, 0.85) * (0.75 + 0.25 * smoothstep(0, 0.12, u)),
 };
 
@@ -297,7 +300,54 @@ function sansevieria(plant, R) {
   }
 }
 
-const MODELS = { strelitzia, monstera, philodendron, sansevieria };
+// Banded canes: pale bark with dark rings where old leaves fell.
+const caneTex = texture(4, 8, (g) => {
+  g.fillStyle = '#b39a74';
+  g.fillRect(0, 0, 4, 8);
+  g.fillStyle = '#5c4a35';
+  g.fillRect(0, 0, 4, 1);
+  g.fillStyle = '#8a9a62';
+  g.fillRect(0, 4, 4, 1);
+}, { repeat: true });
+
+function dracaena(plant, R) {
+  const soil = pot(plant, { rTop: 0.14, rBot: 0.115, h: 0.3, color: 0x5a5f63, soil: soilTex('potting', 10) });
+  const saucer = cyl(plant.group, [0.17, 0.16, 0.02], [0, 0, 0], toon(0xd8dde0, { transparent: true, opacity: 0.55 }), { seg: 12 });
+  plant.meshes.push(saucer);
+  // three canes of different heights, leaning apart; [dx, dz, height, crown depth]
+  const canes = [
+    [0.03, -0.02, 1.82, 0.62],
+    [-0.04, 0.05, 1.18, 0.42],
+    [0.06, 0.07, 0.98, 0.3],
+  ];
+  const yellows = [0x6f8f3a, 0x86a043, 0x9aa648, 0xb0aa4e, 0x7a9440, 0xc0b25a];
+  canes.forEach(([dx, dz, h, crown], c) => {
+    const top = [dx * 3.2, soil + h, dz * 3.2];
+    const tex = caneTex.clone();
+    tex.repeat.set(1, Math.round(h * 9));
+    tex.needsUpdate = true;
+    plant.meshes.push(rod(plant.group, [dx * 0.4, soil, dz * 0.4], top, 0.017 - c * 0.002, toon(0xffffff, { map: tex }), 6));
+    // leaves come off the top of the cane in a loose spiral; the stressed ones droop hard
+    const n = 18 - c * 4;
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1); // 0 = lowest, oldest
+      const y = top[1] - crown * (1 - t) * (0.85 + 0.3 * R());
+      const k = (y - soil) / h;
+      frond(plant, {
+        at: [dx * 0.4 + (top[0] - dx * 0.4) * k, y, dz * 0.4 + (top[2] - dz * 0.4) * k],
+        azimuth: i * 2.4 + c, tilt: 0.75 + 0.65 * (1 - t), len: 0.04, arch: 0, radius: 0,
+        leaf: {
+          length: 0.42 + 0.18 * R(), width: 0.05 + 0.012 * R(), profile: PROFILES.strap, segU: 16, segV: 4,
+          fold: 0.3, curl: 1.3 + 0.6 * (1 - t) + R() * 0.4, color: yellows[Math.floor(R() * yellows.length)],
+          tip: 0x8a6a3a,
+        },
+        leafTilt: 0.1, roll: (R() - 0.5) * 0.5, flex: 0.7, freq: 1.8 + R() * 0.6, phase: c * 3 + i,
+      });
+    }
+  });
+}
+
+const MODELS = { strelitzia, monstera, philodendron, sansevieria, dracaena };
 
 // ------------------------------------------------------------------- plant
 
@@ -359,5 +409,6 @@ export function animatePlant(plant, t, wind, calm = 1) {
 }
 
 export function setPlantLayer(plant, layer, on) {
+  if (!plant.meshes) return;
   for (const m of plant.meshes) on ? m.layers.enable(layer) : m.layers.disable(layer);
 }

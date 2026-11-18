@@ -1,6 +1,6 @@
 # Room page (`/room/`)
 
-A fullscreen pixel-art 3D model of my bedroom with the four plants in it, plus a watering tracker. Clicking a plant opens a sidebar (a bottom sheet on phones) with its care info. The only other control is the time-of-day slider in the corner. Plain ES modules + three.js from jsDelivr; `build.py` copies `room/` to `_site/room/` as-is.
+A fullscreen pixel-art 3D model of my bedroom with the plants in it, plus a watering tracker that also covers a plant elsewhere in the apartment. Clicking a plant opens a sidebar (a bottom sheet on phones) with its care info. The only other control is the time-of-day slider in the corner. Plain ES modules + three.js from jsDelivr; `build.py` copies `room/` to `_site/room/` as-is.
 
 ```
 room/
@@ -48,7 +48,7 @@ If the weather can't be fetched (offline, blocked), everything falls back to the
 - **Move a plant** (e.g. onto the stand): edit its `position` `[x, y, z]` in `plants.json`. x runs bed wall (-1.675) to desk wall (1.675); z runs from the bay opening (-1.41; the bay's back window is at -2.46) to the closet wall (1.41; the door alcove goes back to 1.93); the desk top is y = 0.75. The three-tier bamboo stand in the bay is `PLANT_STAND` in `room.js` (trays at y = 0.71, 0.49, 0.08); a plant on it uses its tray's x, y, z. For a one-off stand under a single plant, set `"stand": 0.45` to draw a 45 cm stand and lift the plant.
 - **Fix the room's dimensions**: they live at the top of `room.js` (`ROOM`, `BAY`, `SASH`, `BEAM`, `DESK`, `ALCOVE`, `CLOSET`). Width, depth and the bay's depth are tape measurements; the rest came from a structure-from-motion reconstruction of two walkthrough videos plus photos (COLMAP), scaled by the tape numbers and checked against an 80" door and a 20" box fan. The left side of the bay, the painting, the lantern and the stand were placed by solving the cameras of the October 20 daylight photos against the room (the bay's left edge sits about 0.76 m from the bed wall, with a 0.45 m straight return before the angled window). Walls, bay, closet, door, bed and nightstand follow the constants; the things on the desk, the bike, the mirror, and the plant positions in `plants.json` are absolute coordinates and may need a nudge after.
 - **Change a schedule**: `water.every.growing` (Apr–Sep) / `water.every.rest` (Nov–Feb), in days; Mar and Oct use the midpoint. `water.snooze` is how far "Still damp" pushes the next check.
-- **Add a plant**: add an entry to `plants.json` with `model` set to one of `strelitzia`, `monstera`, `philodendron`, `sansevieria` (closest look); new leaf shapes go in `flora.js`.
+- **Add a plant**: add an entry to `plants.json` with `model` set to one of `strelitzia`, `monstera`, `philodendron`, `sansevieria`, `dracaena` (closest look); new leaf shapes go in `flora.js`. Leave out `model` and `position` for a plant that isn't in the bedroom (the rubber plant): it gets no 3D model or name tag, only a button in the sidebar.
 - **Fix a log entry**: edit `log.json` by hand. One event per line: `{"id", "plant", "type": water|feed|check|note, "at": ISO time, "note"?}`.
 
 ## Handy links

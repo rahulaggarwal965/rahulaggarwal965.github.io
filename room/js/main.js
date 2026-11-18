@@ -77,10 +77,13 @@ function init3D() {
   const fxScene = new THREE.Scene();
   const room = buildRoom();
   scene.add(room.root);
+  // plants elsewhere in the apartment have no model; they live only in the sidebar
   state.plants.forEach((p, i) => {
+    if (!p.def.model) return;
     Object.assign(p, buildPlant(p.def, 101 + i * 17));
     scene.add(p.outer);
   });
+  const shown = state.plants.filter((p) => p.outer);
 
   const env = new Environment(scene, fxScene, room);
   const mirror = new Mirror(room.mirrorGlass);
@@ -203,13 +206,13 @@ function init3D() {
   const raycaster = new THREE.Raycaster();
   raycaster.layers.set(LAYER_PICK);
   const ndc = new THREE.Vector2();
-  const proxies = state.plants.map((p) => p.proxy);
+  const proxies = shown.map((p) => p.proxy);
   function pick(e) {
     const r = canvas.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
     const hit = raycaster.intersectObjects(proxies, false)[0];
-    return hit ? state.plants.find((p) => p.proxy === hit.object) : null;
+    return hit ? shown.find((p) => p.proxy === hit.object) : null;
   }
   let down = null;
   canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
@@ -226,6 +229,7 @@ function init3D() {
   let tween = null;
   const right = new THREE.Vector3(), up = new THREE.Vector3();
   function focus(p) {
+    if (!p.focus) return;
     const zoom = Math.max(camera.zoom, 2.2);
     const to = p.focus.clone();
     const worldPerCss = (camera.right - camera.left) / zoom / canvasBox.w;
@@ -270,7 +274,7 @@ function init3D() {
     stepTween(now);
     controls.update();
     updateWalls();
-    for (const p of state.plants) animatePlant(p, t, wind);
+    for (const p of shown) animatePlant(p, t, wind);
     room.animate(t, wind);
     streaks?.update(t, dt, 0.35 + 0.65 * env.daylight);
     env.update(t, dt, wind);

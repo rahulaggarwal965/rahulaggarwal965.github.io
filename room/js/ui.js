@@ -57,7 +57,7 @@ export class UI {
     this.card = $('card');
     this.toastTimer = 0;
 
-    for (const p of state.plants) {
+    for (const p of state.plants.filter((q) => q.def.model)) {
       const b = document.createElement('button');
       b.className = 'tag';
       b.type = 'button';
@@ -87,6 +87,7 @@ export class UI {
   renderTags() {
     for (const p of this.s.plants) {
       const b = this.tags.get(p.def.id);
+      if (!b) continue;
       b.innerHTML = `${STATE_ICON[p.status.state]()}<span>${esc(p.def.short)}</span>`;
       b.title = `${p.def.name} — ${p.status.label}`;
       b.classList.toggle('selected', this.s.selected === p);
@@ -98,7 +99,7 @@ export class UI {
     // plants that stand together (the stand) can put tags on top of each other;
     // stack any that overlap, the higher plant's tag on top
     const placed = [];
-    const items = this.s.plants.map((p) => ({ b: this.tags.get(p.def.id), pt: project(p.top) }))
+    const items = this.s.plants.filter((p) => p.top).map((p) => ({ b: this.tags.get(p.def.id), pt: project(p.top) }))
       .sort((a, c) => (a.pt?.y ?? 0) - (c.pt?.y ?? 0));
     for (const { b, pt } of items) {
       b.style.visibility = pt ? 'visible' : 'hidden';

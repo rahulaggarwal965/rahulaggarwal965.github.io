@@ -90,6 +90,51 @@
         "Papery brown leaf tips are normal for this one."
       ],
       "id_note": "Short, thick, V-folded leaves in a rosette with red-brown edges: a dwarf snake plant sold as Sansevieria 'Samurai Dwarf' (snake plants have since been moved into Dracaena, so it's also labelled Dracaena 'Samurai')."
+    },
+    {
+      "id": "dracaena",
+      "name": "Corn plant",
+      "short": "Dracaena",
+      "latin": "Dracaena fragrans",
+      "spot": "Floor, next to the nightstand",
+      "model": "dracaena",
+      "position": [-1.2, 0, 0.84],
+      "stand": 0,
+      "water": {
+        "every": { "growing": 10, "rest": 16 },
+        "snooze": 3,
+        "when": "When the top half of the pot is dry; push a finger or chopstick down to check. Water slowly until it runs out the bottom, then tip out the saucer. Never let it sit in water."
+      },
+      "light": "Bright, indirect light. This corner is on the dim side; if it keeps fading, move it closer to the bay.",
+      "feed": { "every": 45, "months": [4, 5, 6, 7, 8], "what": "Balanced liquid fertilizer at half strength. Don't feed it until it's putting out healthy new leaves again." },
+      "notes": [
+        "It's stressed: the leaves are drooping and yellowing, with brown tips. That's common after a move, and also a sign of soggy roots.",
+        "Before repotting, slide it out of the nursery pot and look at the roots. Firm and white is fine. Brown and mushy means root rot: cut those off and repot into fresh, fast-draining mix.",
+        "If the roots are healthy, wait for spring to repot, and go only one size up. A much bigger pot holds water and makes things worse.",
+        "Brown tips come from fluoride and salts in tap water. Filtered or rain water helps, and snip the tips at an angle if they bother you.",
+        "Pull off the fully yellow leaves; they won't come back."
+      ],
+      "id_note": "Thick, ringed canes in staggered heights with long, arching, strap-shaped leaves: Dracaena fragrans, the corn plant. The leaves are plain green, without the yellow stripe of 'Massangeana'."
+    },
+    {
+      "id": "rubber-plant",
+      "name": "Burgundy rubber plant",
+      "short": "Rubber plant",
+      "latin": "Ficus elastica 'Burgundy'",
+      "spot": "Living room, on the kitchen counter",
+      "water": {
+        "every": { "growing": 9, "rest": 14 },
+        "snooze": 3,
+        "when": "When the top two inches are dry. Water thoroughly and empty the saucer."
+      },
+      "light": "Bright, indirect light, with a little direct sun. More light keeps the leaves dark and the stems compact.",
+      "feed": { "every": 30, "months": [3, 4, 5, 6, 7, 8, 9], "what": "Balanced liquid fertilizer at half strength." },
+      "notes": [
+        "It's leggy: the long stems are reaching sideways for light. Cutting them back in spring makes it branch and fill in. The cut bleeds white latex, which irritates skin.",
+        "The pale, curled leaves at the end won't recover; take them off.",
+        "Wipe the leaves now and then. Dust dulls them and cuts the light they get."
+      ],
+      "id_note": "Thick, glossy, oval leaves in near-black burgundy on woody stems: Ficus elastica 'Burgundy'."
     }
   ]
 }
