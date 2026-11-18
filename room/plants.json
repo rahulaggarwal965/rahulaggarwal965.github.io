@@ -98,7 +98,7 @@
       "latin": "Dracaena fragrans",
       "spot": "Floor, next to the nightstand",
       "model": "dracaena",
-      "position": [-1.2, 0, 0.84],
+      "position": [-1.44, 0, 0.94],
       "stand": 0,
       "water": {
         "every": { "growing": 10, "rest": 16 },

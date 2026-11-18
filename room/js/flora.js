@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { toon, cyl, rod, box, texture, rng, smoothstep } from './util.js';
 import { LAYER_PICK } from './pixel.js';
+import { ROOM } from './room.js';
 
 const Y = new THREE.Vector3(0, 1, 0);
 const X = new THREE.Vector3(1, 0, 0);
@@ -316,9 +317,10 @@ function dracaena(plant, R) {
   plant.meshes.push(saucer);
   // three canes of different heights, leaning apart; [dx, dz, height, crown depth]
   const canes = [
-    [0.03, -0.02, 1.82, 0.62],
-    [-0.04, 0.05, 1.18, 0.42],
-    [0.06, 0.07, 0.98, 0.3],
+    [0.03, -0.02, 1.82, 0.9],
+    [-0.04, 0.05, 1.18, 0.62],
+    [0.06, 0.07, 0.98, 0.45],
+    [-0.02, -0.06, 1.45, 0.55],
   ];
   const yellows = [0x6f8f3a, 0x86a043, 0x9aa648, 0xb0aa4e, 0x7a9440, 0xc0b25a];
   canes.forEach(([dx, dz, h, crown], c) => {
@@ -327,17 +329,22 @@ function dracaena(plant, R) {
     tex.repeat.set(1, Math.round(h * 9));
     tex.needsUpdate = true;
     plant.meshes.push(rod(plant.group, [dx * 0.4, soil, dz * 0.4], top, 0.017 - c * 0.002, toon(0xffffff, { map: tex }), 6));
+    const az0 = R() * Math.PI * 2;
     // leaves come off the top of the cane in a loose spiral; the stressed ones droop hard
-    const n = 18 - c * 4;
+    const n = [34, 24, 18, 20][c];
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1); // 0 = lowest, oldest
       const y = top[1] - crown * (1 - t) * (0.85 + 0.3 * R());
       const k = (y - soil) / h;
+      const at = [dx * 0.4 + (top[0] - dx * 0.4) * k, y, dz * 0.4 + (top[2] - dz * 0.4) * k];
+      const az = az0 + i * 2.4;
+      // it stands in the corner: leaves pointing at the bed wall stop short of it
+      const gap = plant.def.position[0] + at[0] - ROOM.xMin - 0.04;
+      const reach = Math.max(0.12, Math.sin(az) < 0 ? gap / (-Math.sin(az) * 0.85) : 1);
       frond(plant, {
-        at: [dx * 0.4 + (top[0] - dx * 0.4) * k, y, dz * 0.4 + (top[2] - dz * 0.4) * k],
-        azimuth: i * 2.4 + c, tilt: 0.75 + 0.65 * (1 - t), len: 0.04, arch: 0, radius: 0,
+        at, azimuth: az, tilt: 0.75 + 0.65 * (1 - t), len: 0.04, arch: 0, radius: 0,
         leaf: {
-          length: 0.42 + 0.18 * R(), width: 0.05 + 0.012 * R(), profile: PROFILES.strap, segU: 16, segV: 4,
+          length: Math.min(reach, 0.42 + 0.18 * R()), width: 0.055 + 0.015 * R(), profile: PROFILES.strap, segU: 16, segV: 4,
           fold: 0.3, curl: 1.3 + 0.6 * (1 - t) + R() * 0.4, color: yellows[Math.floor(R() * yellows.length)],
           tip: 0x8a6a3a,
         },
